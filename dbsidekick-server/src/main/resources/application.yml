@@ -1,0 +1,83 @@
+server:
+  port: 8080
+  compression:
+    enabled: false
+  tomcat:
+    max-swallow-size: -1
+
+logging:
+  file:
+    name: ${user.home}/.dbsidekick/logs/dbsidekick.log
+  logback:
+    rollingpolicy:
+      max-file-size: 10MB
+      max-history: 7
+  level:
+    root: INFO
+    com.dbsidekick: INFO
+
+spring:
+  application:
+    name: dbsidekick
+  mvc:
+    async:
+      request-timeout: 600000
+  ai:
+    openai:
+      base-url: https://api.deepseek.com
+      # 骨架阶段占位；未配置环境变量时仍可启动（不发起真实调用）
+      api-key: ${DEEPSEEK_API_KEY:}
+      chat:
+        options:
+          model: deepseek-v4-pro
+          temperature: 0.1
+
+sidekick:
+  milvus:
+    host: localhost
+    port: 19530
+    collection: schema_chunks
+  embedding:
+    model: bge-base-zh-1.5b
+    dimension: 768
+    ollama-url: http://localhost:11434
+  relation:
+    confidence-threshold: 3
+    excluded-column-names: id,uuid,guid,code,no,num,sort,order,seq,version
+    temp-table-prefixes: tmp_,temp_,_tmp_,_temp_
+    adjacency-whitelist-limit: 8
+    inferred-threshold-multiplier: 2
+    score:
+      sql-success: 1
+      row-count-positive: 1
+      saved-to-script: 5
+      user-confirmed: 10
+      user-rejected: -100
+  ai:
+    embedding:
+      provider: onnx
+      onnx-model-path: ""
+      ollama-url: http://localhost:11434
+      ollama-model: bge-base-zh-1.5b
+      dimension: 768
+    milvus:
+      host: localhost
+      port: 19530
+      collection: schema_chunks
+      dimension: 768
+    llm:
+      base-url: https://api.deepseek.com
+      api-key: ${DEEPSEEK_API_KEY:}
+      model: deepseek-v4-pro
+      timeout-seconds: 300
+      temperature: 0.1
+    rerank:
+      enabled: true
+      candidate-top-k: 10
+      final-top-k: 5
+      timeout-seconds: 3
+      cache-ttl-ms: 60000
+    fewshot:
+      enabled: true
+      top-k: 3
+      min-row-count: 1

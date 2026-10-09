@@ -1,0 +1,39 @@
+# 本地运行数据：连接密码、会话、表结构、诊断文件
+/data/
+
+# 日志与临时进程文件
+*.log
+*.log.err
+*.pid
+
+# 数据库文件（避免把 SQLite 误提交）
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+
+# 依赖与构建产物
+**/node_modules/
+**/target/
+**/dist/
+
+# 打包时由 dbsidekick-web/dist 复制而来，见 dbsidekick-desktop/build-exe.bat
+dbsidekick-server/src/main/resources/static/
+# Added by code-review-graph
+.code-review-graph/
+
+# 本地知识图谱与编辑器配置
+.cursor/mcp.json
+.devctx
+
+# 模型文件
+*.onnx
+tokenizer.json
+
+# 密钥与环境
+.env
+.env.*
+*.pem
+*.p12
+*.key

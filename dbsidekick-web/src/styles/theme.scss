@@ -1,0 +1,51 @@
+:root {
+  --sk-primary: #3b82f6;
+  --sk-primary-light: #eff6ff;
+  --sk-bg: #f8fafc;
+  --sk-card: #ffffff;
+  --sk-border: #e2e8f0;
+  --sk-text-primary: #1e293b;
+  --sk-text-secondary: #64748b;
+  --sk-text-tertiary: #94a3b8;
+  --sk-success: #10b981;
+  --sk-warning: #f59e0b;
+  --sk-danger: #ef4444;
+
+  --el-color-primary: #3b82f6;
+  --el-color-primary-light-3: #93c5fd;
+  --el-color-primary-light-5: #bfdbfe;
+  --el-color-primary-light-7: #dbeafe;
+  --el-color-primary-light-8: #eff6ff;
+  --el-color-primary-light-9: #f8fafc;
+  --el-color-primary-dark-2: #2563eb;
+  --el-border-color: #e2e8f0;
+  --el-border-color-light: #e2e8f0;
+  --el-border-color-lighter: #f1f5f9;
+  --el-text-color-primary: #1e293b;
+  --el-text-color-regular: #64748b;
+  --el-text-color-secondary: #94a3b8;
+  --el-bg-color: #ffffff;
+  --el-bg-color-page: #f8fafc;
+  --el-fill-color-blank: #ffffff;
+}
+
+html,
+body,
+#app {
+  background: var(--sk-bg);
+  color: var(--sk-text-primary);
+}
+
+.el-button:not(.is-text):not(.is-link) {
+  height: 32px;
+  border-radius: 6px;
+}
+
+.el-input__wrapper {
+  min-height: 32px;
+  border-radius: 6px;
+}
+
+.el-textarea__inner {
+  border-radius: 6px;
+}
