@@ -9,6 +9,20 @@ REM   npm        需在 PATH 中（脚本不写死 Node 路径）
 set ROOT=%~dp0..
 cd /d "%ROOT%"
 
+if "%JAVA_HOME%"=="" (
+  echo [ERROR] 请先设置 JAVA_HOME，指向 JDK 17
+  exit /b 1
+)
+if "%MVN_CMD%"=="" set MVN_CMD=mvn
+where "%MVN_CMD%" >nul 2>&1
+if errorlevel 1 (
+  if not exist "%MVN_CMD%" (
+    echo [ERROR] 找不到 Maven：%MVN_CMD%
+    echo 请把 mvn 加入 PATH，或设置 MVN_CMD 为 mvn.cmd 的完整路径
+    exit /b 1
+  )
+)
+
 echo [1/4] Build frontend...
 cd dbsidekick-web
 call npm install
@@ -26,11 +40,6 @@ if errorlevel 1 exit /b 1
 
 echo [3/4] Maven package (reactor install，保证 desktop 用最新 server)...
 cd /d "%ROOT%"
-if "%JAVA_HOME%"=="" (
-  echo [ERROR] 请先设置 JAVA_HOME
-  exit /b 1
-)
-if "%MVN_CMD%"=="" set MVN_CMD=mvn
 set "PATH=%JAVA_HOME%\bin;%PATH%"
 call "%MVN_CMD%" clean install -DskipTests
 if errorlevel 1 exit /b 1

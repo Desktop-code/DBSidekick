@@ -1,6 +1,19 @@
 # 本地运行数据：连接密码、会话、表结构、诊断文件
 /data/
 
+# ========== IDE 与编辑器 ==========
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# ========== 系统文件 ==========
+.DS_Store
+Thumbs.db
+desktop.ini
+
 # 日志与临时进程文件
 *.log
 *.log.err
@@ -37,3 +50,12 @@ tokenizer.json
 *.pem
 *.p12
 *.key
+
+# 文件目录
+docs/test-report-*
+docs/README.MD
+
+# Cursor / AI 工具本地配置（不入库）
+.cursorignore
+.cursorrules
+AGENTS.md
