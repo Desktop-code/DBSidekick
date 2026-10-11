@@ -2,9 +2,7 @@ package com.dbsidekick.desktop;
 
 import com.dbsidekick.DBSidekickApplication;
 import java.awt.BorderLayout;
-import java.awt.Color;
 import java.awt.Component;
-import java.awt.Font;
 import java.awt.Image;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
@@ -18,14 +16,12 @@ import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import javafx.application.Application;
 import javafx.application.Platform;
-import javafx.scene.control.Alert;
 import javafx.stage.Stage;
 import javax.imageio.ImageIO;
 import javax.swing.JFrame;
-import javax.swing.JLabel;
-import javax.swing.SwingConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.WindowConstants;
 import me.friwi.jcefmaven.CefAppBuilder;
@@ -51,14 +47,21 @@ public class DesktopLauncher extends Application {
     private CefBrowser cefBrowser;
     private Component browserUI;
     private JFrame frame;
+    private StartupSplash splash;
     private volatile boolean closing;
     private volatile Throwable startupError;
+    /** spring：进程内重试不了；jcef：下载或初始化可以再来一次。 */
+    private volatile String failedStage = "spring";
 
     @Override
     public void init() {
         System.setProperty("java.awt.headless", "false");
+        boolean firstLaunch = !nativesCached();
         try {
-            SwingUtilities.invokeAndWait(this::showLoadingFrame);
+            SwingUtilities.invokeAndWait(() -> {
+                splash = new StartupSplash(firstLaunch);
+                splash.show();
+            });
         } catch (Exception ex) {
             System.err.println("[Sidekick] 启动窗口未能提前显示: " + ex.getMessage());
         }
@@ -66,7 +69,7 @@ public class DesktopLauncher extends Application {
             if (Boolean.parseBoolean(System.getProperty("dbsidekick.force.boot.fail", "false"))) {
                 throw new IllegalStateException("模拟启动失败（-Ddbsidekick.force.boot.fail=true）");
             }
-            System.out.println(needsJcefDownload()
+            System.out.println(firstLaunch
                     ? "[Sidekick] 正在首次初始化，请稍候..."
                     : "[Sidekick] 正在启动...");
             springContext = new SpringApplicationBuilder(DBSidekickApplication.class)
@@ -92,6 +95,7 @@ public class DesktopLauncher extends Application {
             System.out.println("[Sidekick] JCEF ready");
         } catch (Exception ex) {
             startupError = unwrap(ex);
+            failedStage = springContext == null ? "spring" : "jcef";
             writeErrorLog(startupError);
             System.err.println("[Sidekick] startup failed: " + startupError.getMessage());
         }
@@ -122,41 +126,46 @@ public class DesktopLauncher extends Application {
                 }
             }
         });
-        cefApp = builder.build();
-        SwingUtilities.invokeAndWait(() -> {
-            cefClient = cefApp.createClient();
-            cefBrowser = cefClient.createBrowser(
-                    "http://127.0.0.1:" + port + "/",
-                    false,
-                    false);
-            browserUI = cefBrowser.getUIComponent();
+        builder.setProgressHandler((state, percent) -> {
+            System.out.println("[Sidekick] JCEF " + state + " " + percent);
+            if (splash != null) {
+                splash.onJcefProgress(state, percent);
+            }
         });
+        if (!nativesCached()) {
+            if (splash != null) {
+                splash.setDeterminate(50, "正在检查运行环境...");
+            }
+        } else if (splash != null) {
+            splash.setDeterminate(95, "正在初始化浏览器...");
+        }
+        cefApp = builder.build();
     }
 
-    private static boolean needsJcefDownload() {
+    /** install.lock 和 build_meta.json 都在，说明运行组件已经缓存，不用再下载。 */
+    private static boolean nativesCached() {
         Path install = Paths.get(System.getProperty("user.home"), ".dbsidekick", "jcef-bundle");
-        return !Files.exists(install.resolve("libcef.dll"))
-                && !Files.exists(install.resolve("jcef.dll"));
+        return Files.exists(install.resolve("install.lock"))
+                && Files.exists(install.resolve("build_meta.json"));
     }
 
     @Override
     public void start(Stage primaryStage) {
         if (startupError != null) {
-            SwingUtilities.invokeLater(() -> {
-                if (frame != null) {
-                    frame.dispose();
-                }
-            });
-            handleStartupFailure(startupError);
+            showStartupFailure();
             return;
         }
         // JCEF 窗口模式用的是重量级 Canvas，SwingNode 嵌不进去，画面会是空白。
-        // 主窗口用 Swing JFrame，浏览器组件直接作为内容。
+        // 主窗口用独立的 Swing JFrame，等启动小窗淡出后再创建。
         Platform.setImplicitExit(false);
-        SwingUtilities.invokeLater(this::showBrowserFrame);
+        if (splash != null) {
+            splash.finishThen(this::showBrowserFrame);
+        } else {
+            SwingUtilities.invokeLater(this::showBrowserFrame);
+        }
     }
 
-    private void showLoadingFrame() {
+    private void showBrowserFrame() {
         frame = new JFrame("DBSidekick");
         frame.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
         frame.addWindowListener(new WindowAdapter() {
@@ -165,34 +174,19 @@ public class DesktopLauncher extends Application {
                 closeDesktop();
             }
         });
-        JLabel loading = new JLabel("正在启动…", SwingConstants.CENTER);
-        loading.setFont(loading.getFont().deriveFont(Font.PLAIN, 16f));
-        loading.setForeground(new Color(0x30, 0x31, 0x33));
-        loading.setOpaque(true);
-        loading.setBackground(Color.WHITE);
-        frame.getContentPane().add(loading, BorderLayout.CENTER);
         applyWindowIcon(frame);
         frame.setSize(1400, 900);
         frame.setLocationRelativeTo(null);
+        // 浏览器画布要挂在已经创建好的主窗口上，不能提前在启动小窗期间创建。
+        cefClient = cefApp.createClient();
+        cefBrowser = cefClient.createBrowser(
+                "http://127.0.0.1:" + port + "/",
+                false,
+                false);
+        browserUI = cefBrowser.getUIComponent();
+        frame.getContentPane().add(browserUI, BorderLayout.CENTER);
         frame.setVisible(true);
-    }
-
-    private void showBrowserFrame() {
-        if (frame == null) {
-            showLoadingFrame();
-        }
-        frame.getContentPane().removeAll();
-        if (browserUI != null) {
-            frame.getContentPane().add(browserUI, BorderLayout.CENTER);
-        }
-        frame.revalidate();
-        frame.repaint();
-        if (!frame.isVisible()) {
-            frame.setVisible(true);
-        }
-        if (cefBrowser != null) {
-            cefBrowser.reload();
-        }
+        frame.toFront();
     }
 
     private void applyWindowIcon(JFrame frame) {
@@ -240,26 +234,67 @@ public class DesktopLauncher extends Application {
         closer.start();
     }
 
-    private void handleStartupFailure(Throwable error) {
-        Path logPath = writeErrorLog(error);
-        Alert alert = new Alert(Alert.AlertType.ERROR);
-        alert.setTitle("DBSidekick 启动失败");
-        alert.setHeaderText("应用启动失败");
-        String hint = error.getMessage() == null ? "" : error.getMessage();
-        String lower = hint.toLowerCase();
-        boolean jcef = lower.contains("cef")
-                || lower.contains("jcef")
-                || lower.contains("download")
-                || lower.contains("timed out")
-                || lower.contains("timeout");
-        alert.setContentText((jcef
-                ? "首次初始化需要联网下载组件，请检查网络。\n"
-                : "")
-                + "详细日志：\n" + (logPath != null ? logPath : "(写入失败)"));
-        alert.showAndWait();
+    private void showStartupFailure() {
+        String message = friendlyStartupError(startupError);
+        boolean canRetry = "jcef".equals(failedStage);
+        if (splash != null) {
+            splash.showFailure(message, canRetry, this::retryJcef);
+            return;
+        }
+        System.err.println("[Sidekick] " + message);
         shutdownSpring();
         Platform.exit();
         System.exit(1);
+    }
+
+    private void retryJcef() {
+        Thread retry = new Thread(() -> {
+            try {
+                startupError = null;
+                initJcef();
+                System.out.println("[Sidekick] JCEF ready");
+                if (splash != null) {
+                    splash.finishThen(this::showBrowserFrame);
+                } else {
+                    SwingUtilities.invokeLater(this::showBrowserFrame);
+                }
+            } catch (Exception ex) {
+                startupError = unwrap(ex);
+                failedStage = "jcef";
+                writeErrorLog(startupError);
+                System.err.println("[Sidekick] startup failed: " + startupError.getMessage());
+                showStartupFailure();
+            }
+        }, "dbsidekick-jcef-retry");
+        retry.setDaemon(false);
+        retry.start();
+    }
+
+    static String friendlyStartupError(Throwable error) {
+        if (error instanceof TimeoutException) {
+            String timeoutMessage = error.getMessage();
+            if (timeoutMessage == null || timeoutMessage.isBlank()) {
+                return "启动超时，请检查网络或查看日志";
+            }
+        }
+        String raw = error == null || error.getMessage() == null ? "" : error.getMessage();
+        String lower = raw.toLowerCase();
+        if (lower.contains("download")
+                || lower.contains("timeout")
+                || lower.contains("timed out")
+                || lower.contains("cef")
+                || lower.contains("jcef")) {
+            return "网络连接失败，请检查网络或代理后重试";
+        }
+        if (lower.contains("address already in use")
+                || lower.contains("bindexception")
+                || raw.contains("端口")) {
+            return "端口被占用";
+        }
+        if (raw.isBlank()) {
+            return "启动失败，请查看日志";
+        }
+        return raw;
     }
 
     private Path writeErrorLog(Throwable e) {

@@ -3,7 +3,9 @@ package com.dbsidekick.controller;
 import com.dbsidekick.ai.llm.OpenAiCompatibleClient;
 import com.dbsidekick.asset.ChatSessionService;
 import com.dbsidekick.asset.MessageDetail;
+import com.dbsidekick.asset.SessionDetail;
 import com.dbsidekick.datasource.ActiveDatabase;
+import com.dbsidekick.schema.SchemaSyncService;
 import com.dbsidekick.text2sql.ReasoningStep;
 import com.dbsidekick.text2sql.SseEvent;
 import com.dbsidekick.text2sql.Text2SqlResult;
@@ -45,6 +47,7 @@ public class Text2SqlStreamController {
     private final Text2SqlService text2SqlService;
     private final OpenAiCompatibleClient deepSeekClient;
     private final ChatSessionService chatSessionService;
+    private final SchemaSyncService schemaSyncService;
     private final ObjectMapper objectMapper;
     private final ExecutorService sseExecutor = Executors.newFixedThreadPool(4, r -> {
         Thread t = new Thread(r, "sidekick-sse");
@@ -55,10 +58,12 @@ public class Text2SqlStreamController {
     public Text2SqlStreamController(Text2SqlService text2SqlService,
                                     OpenAiCompatibleClient deepSeekClient,
                                     ChatSessionService chatSessionService,
+                                    SchemaSyncService schemaSyncService,
                                     ObjectMapper objectMapper) {
         this.text2SqlService = text2SqlService;
         this.deepSeekClient = deepSeekClient;
         this.chatSessionService = chatSessionService;
+        this.schemaSyncService = schemaSyncService;
         this.objectMapper = objectMapper;
     }
 
@@ -90,6 +95,7 @@ public class Text2SqlStreamController {
         if (!StringUtils.hasText(question)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "question 不能为空");
         }
+        BoundScope scope = bindScope(datasourceId, sessionId, dbName);
 
         response.setHeader("Cache-Control", "no-cache, no-transform");
         response.setHeader("X-Accel-Buffering", "no");
@@ -116,14 +122,65 @@ public class Text2SqlStreamController {
             log.warn("[Sidekick][SSE] emitter error: {}", ex.getMessage());
         });
 
-        final String ds = datasourceId;
+        final String ds = scope.datasourceId();
         final String q = question;
         final int k = topK;
         final String sid = sessionId;
-        final String db = dbName;
+        final String db = scope.dbName();
         final String title = preferredTitle;
         sseExecutor.execute(() -> runStream(emitter, stopped, ds, q, k, sid, db, title, streamStartMs));
         return emitter;
+    }
+
+    /**
+     * 已有会话以库里记下的数据源和库名为准，客户端传来的不一致值直接丢掉。
+     * 老会话没写库名时，用该实例的第一个库并补写回去。
+     */
+    private BoundScope bindScope(String datasourceId, String sessionId, String dbName) {
+        try {
+            String ds = datasourceId.trim();
+            String db = StringUtils.hasText(dbName) ? dbName.trim() : null;
+            if (StringUtils.hasText(sessionId)) {
+                SessionDetail detail = chatSessionService.getSession(sessionId.trim());
+                if (StringUtils.hasText(detail.getDatasourceId())) {
+                    ds = detail.getDatasourceId().trim();
+                }
+                if (StringUtils.hasText(detail.getDbName())) {
+                    String bound = detail.getDbName().trim();
+                    if (db != null && !bound.equals(db)) {
+                        log.info("[SSE] 会话已绑定库 {}，忽略请求里的 {}", bound, db);
+                    }
+                    db = bound;
+                } else {
+                    db = firstDatabase(ds);
+                    chatSessionService.assignDbNameIfBlank(sessionId.trim(), db);
+                }
+            } else if (!StringUtils.hasText(db)) {
+                db = firstDatabase(ds);
+            }
+            if (!StringUtils.hasText(db)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请先选择数据库");
+            }
+            return new BoundScope(ds, db);
+        } catch (ResponseStatusException ex) {
+            throw ex;
+        } catch (IllegalArgumentException ex) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, ex.getMessage());
+        } catch (Exception ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    ex.getMessage() == null ? "无法确定会话所属数据库" : ex.getMessage());
+        }
+    }
+
+    private String firstDatabase(String datasourceId) throws Exception {
+        List<String> names = schemaSyncService.listDatabases(datasourceId);
+        if (names == null || names.isEmpty()) {
+            return null;
+        }
+        return names.get(0);
+    }
+
+    private record BoundScope(String datasourceId, String dbName) {
     }
 
     private void runStream(SseEmitter emitter, AtomicBoolean stopped,

@@ -365,24 +365,22 @@ function scheduleLoadSessions() {
 function openSession(s) {
   if (!s?.id) return
   appStore.setCurrentDatasource(s.datasourceId || null)
+  if (s.dbName) {
+    appStore.setCurrentDatabase(s.dbName)
+  }
   appStore.setCurrentSessionId(s.id)
   tabsStore.openAiChat({
     datasourceId: s.datasourceId || null,
+    dbName: s.dbName || '',
     sessionId: s.id,
     title: `AI会话: ${s.title || '新会话'}`
   })
 }
 
-async function onNewSession() {
-  const id = appStore.currentDatasourceId
-  if (!id) {
-    ElMessage.warning('请先选择数据源')
-    return
-  }
-  appStore.setCurrentSessionId(null)
-  tabsStore.openAiChat({
-    datasourceId: id,
-    title: 'AI会话: 新会话'
+function onNewSession() {
+  appStore.openSessionDialog({
+    datasourceId: appStore.currentDatasourceId || '',
+    dbName: appStore.currentDatabase || ''
   })
 }
 
@@ -583,8 +581,25 @@ function onNodeClick(data) {
     return
   }
   if (data?.nodeType === 'database') {
-    appStore.setCurrentDatasource(data.datasourceId)
-    appStore.setCurrentDatabase(data.database || data.label)
+    const dsId = data.datasourceId
+    const db = data.database || data.label
+    const active = tabsStore.activeTab
+    const hasSession = !!(
+      appStore.currentSessionId
+      || (active?.type === 'aiChat' && active?.props?.sessionId)
+    )
+    const open = () => appStore.openSessionDialog({ datasourceId: dsId, dbName: db })
+    if (!hasSession) {
+      appStore.setCurrentDatasource(dsId)
+      appStore.setCurrentDatabase(db)
+      open()
+      return
+    }
+    ElMessageBox.confirm('当前已有会话，是否新建？', '新建会话', {
+      confirmButtonText: '是',
+      cancelButtonText: '否',
+      type: 'warning'
+    }).then(open).catch(() => {})
   }
 }
 

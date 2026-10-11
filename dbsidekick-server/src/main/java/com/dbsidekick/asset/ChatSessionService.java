@@ -52,6 +52,23 @@ public class ChatSessionService {
         return id;
     }
 
+    /** 老会话没有库名时补上，已经写过的不覆盖。 */
+    public void assignDbNameIfBlank(String sessionId, String dbName) throws Exception {
+        if (!StringUtils.hasText(sessionId) || !StringUtils.hasText(dbName)) {
+            return;
+        }
+        try (Connection conn = sqliteInitializer.open();
+             PreparedStatement ps = conn.prepareStatement("""
+                     UPDATE chat_session SET db_name = ?, updated_at = ?
+                     WHERE id = ? AND (db_name IS NULL OR TRIM(db_name) = '')
+                     """)) {
+            ps.setString(1, dbName.trim());
+            ps.setString(2, now());
+            ps.setString(3, sessionId.trim());
+            ps.executeUpdate();
+        }
+    }
+
     public void updateTitleIfDefault(String sessionId, String firstQuestion) throws Exception {
         if (!StringUtils.hasText(sessionId) || !StringUtils.hasText(firstQuestion)) {
             return;

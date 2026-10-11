@@ -2,7 +2,14 @@
   <div class="sql-list">
     <div class="head">
       <span class="title">SQL 清单</span>
-      <el-button size="small" text type="primary" @click="onNew">+ 新建</el-button>
+      <div class="head-actions">
+        <el-button size="small" text type="primary" @click="onNew">+ 新建</el-button>
+        <el-tooltip content="收起" placement="bottom">
+          <button type="button" class="fold-btn" aria-label="收起" @click="emit('collapse')">
+            <el-icon :size="16"><Fold /></el-icon>
+          </button>
+        </el-tooltip>
+      </div>
     </div>
     <el-input
       ref="searchInputRef"
@@ -74,7 +81,7 @@
 <script setup>
 import { onMounted, onUnmounted, reactive, ref, watch, nextTick } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { MoreFilled, Search, StarFilled } from '@element-plus/icons-vue'
+import { Fold, MoreFilled, Search, StarFilled } from '@element-plus/icons-vue'
 import {
   deleteScript,
   getScript,
@@ -84,6 +91,8 @@ import {
 } from '../api/script'
 import { useAppStore } from '../stores/app'
 import { useTabsStore } from '../stores/tabs'
+
+const emit = defineEmits(['collapse'])
 
 const appStore = useAppStore()
 const tabsStore = useTabsStore()
@@ -314,6 +323,30 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   flex-shrink: 0;
+  gap: 8px;
+}
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.fold-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--sk-border);
+  border-radius: 4px;
+  background: var(--sk-card);
+  color: var(--sk-text-secondary);
+  cursor: pointer;
+}
+.fold-btn:hover {
+  color: var(--sk-primary);
+  background: var(--sk-primary-light);
 }
 .title {
   font-size: 12px;

@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { listDatasources, testDatasource } from '../api/datasource'
 import { text2sqlHealth, milvusHealth, embeddingHealth } from '../api/text2sql'
 
+let milvusRecheckTimer = null
+
 export const useAppStore = defineStore('app', {
   state: () => ({
     datasources: [],
@@ -29,7 +31,13 @@ export const useAppStore = defineStore('app', {
     currentSessionId: null,
     sessionRefreshTrigger: 0,
     /** 当前查询范围。旧连接在选中数据源时默认带回保存的库名。 */
-    currentDatabase: null
+    currentDatabase: null,
+    sessionDialog: {
+      open: false,
+      datasourceId: '',
+      dbName: '',
+      token: 0
+    }
   }),
   getters: {
     currentDatasource(state) {
@@ -69,6 +77,17 @@ export const useAppStore = defineStore('app', {
     },
     setCurrentSessionId(id) {
       this.currentSessionId = id || null
+    },
+    openSessionDialog({ datasourceId, dbName } = {}) {
+      this.sessionDialog = {
+        open: true,
+        datasourceId: datasourceId || '',
+        dbName: dbName || '',
+        token: Date.now()
+      }
+    },
+    closeSessionDialog() {
+      this.sessionDialog = { ...this.sessionDialog, open: false }
     },
     bumpSessionRefresh() {
       this.sessionRefreshTrigger += 1
@@ -110,6 +129,13 @@ export const useAppStore = defineStore('app', {
     focusFirstScript() {
       this.scriptFocusToken += 1
     },
+    scheduleMilvusRecheck() {
+      if (milvusRecheckTimer) return
+      milvusRecheckTimer = setTimeout(() => {
+        milvusRecheckTimer = null
+        this.refreshHealth()
+      }, 1500)
+    },
     async refreshHealth() {
       try {
         const [llm, milvus, emb] = await Promise.all([
@@ -135,10 +161,14 @@ export const useAppStore = defineStore('app', {
           this.healthDetail.embedding = `Embedding: DOWN · ${emb.error}`
         } else {
           this.health.embedding = 'unknown'
-          this.healthDetail.embedding = `Embedding: 未就绪 · provider=${provider}`
+          this.healthDetail.embedding = 'Embedding: 未加载'
         }
 
-        if (milvus.reachable) {
+        if (milvus.checked === false) {
+          this.health.milvus = 'unknown'
+          this.healthDetail.milvus = 'Milvus: 检测中'
+          this.scheduleMilvusRecheck()
+        } else if (milvus.reachable) {
           this.health.milvus = 'up'
           this.healthDetail.milvus = `Milvus: UP · collection=${milvus.collection || '-'} · rowCount=${milvus.rowCount ?? 0}`
         } else {

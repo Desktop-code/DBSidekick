@@ -35,13 +35,8 @@ public class AiController {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("provider", embeddingService.provider());
         body.put("modelPath", embeddingService.modelPath());
-        try {
-            boolean ready = embeddingService.ensureReady();
-            body.put("loaded", ready);
-        } catch (Exception ex) {
-            body.put("loaded", false);
-            body.put("error", ex.getMessage());
-        }
+        // 只报缓存状态。真正加载发生在第一次 embed()，避免启动时卡在模型初始化。
+        body.put("loaded", embeddingService.isLoaded());
         return body;
     }
 
@@ -68,12 +63,17 @@ public class AiController {
     @GetMapping("/milvus/health")
     public Map<String, Object> milvusHealth() {
         Map<String, Object> body = new LinkedHashMap<>();
+        boolean checked = milvusSchemaStore.isProbeFinished();
         boolean reachable = milvusSchemaStore.ping();
+        body.put("checked", checked);
         body.put("reachable", reachable);
         body.put("collection", milvusSchemaStore.collectionName());
-        if (!reachable) {
+        if (!checked || !reachable) {
             body.put("exists", false);
             body.put("rowCount", 0);
+            if (checked) {
+                body.put("error", MilvusSchemaStore.NOT_CONNECTED);
+            }
             return body;
         }
         try {

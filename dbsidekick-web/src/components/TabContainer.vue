@@ -36,6 +36,7 @@
         <p>{{ emptyHint }}</p>
         <div class="actions">
           <el-button type="primary" @click="openNewConnection">+ 新建连接</el-button>
+          <el-button @click="openNewAiSession">+ 新建 AI 会话</el-button>
           <el-button @click="openHelp">查看文档</el-button>
         </div>
         <div class="divider">或者试试这样问</div>
@@ -49,7 +50,7 @@
 
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessageBox } from 'element-plus'
 import { DataLine } from '@element-plus/icons-vue'
 import { useTabsStore } from '../stores/tabs'
 import { useAppStore } from '../stores/app'
@@ -110,6 +111,13 @@ function openNewConnection() {
   tabsStore.openConnectionManage({ openCreate: true })
 }
 
+function openNewAiSession() {
+  appStore.openSessionDialog({
+    datasourceId: appStore.currentDatasourceId || '',
+    dbName: appStore.currentDatabase || ''
+  })
+}
+
 function openHelp() {
   ElMessageBox.alert(
     '从左侧选择数据源后，可以在中间用自然语言提问，也可以在查询编辑器里直接写 SQL。右侧清单用来收藏常用脚本。',
@@ -120,13 +128,15 @@ function openHelp() {
 
 function useExample(q) {
   const id = appStore.currentDatasourceId
-  if (!id) {
-    ElMessage.warning('请先在左侧选择数据源')
+  const db = appStore.currentDatabase
+  if (!id || !db) {
+    appStore.openSessionDialog({ datasourceId: id || '', dbName: db || '' })
     return
   }
   appStore.setCurrentSessionId(null)
   tabsStore.openAiChat({
     datasourceId: id,
+    dbName: db,
     title: 'AI会话: 新会话',
     draft: q,
     autoSend: true
