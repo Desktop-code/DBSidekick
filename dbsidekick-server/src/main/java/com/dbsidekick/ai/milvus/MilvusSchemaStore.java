@@ -25,14 +25,16 @@ import io.milvus.v2.service.vector.request.data.FloatVec;
 import io.milvus.v2.service.vector.response.DeleteResp;
 import io.milvus.v2.service.vector.response.QueryResp;
 import io.milvus.v2.service.vector.response.SearchResp;
-import jakarta.annotation.PostConstruct;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -45,6 +47,9 @@ public class MilvusSchemaStore {
     private static final Logger log = LoggerFactory.getLogger(MilvusSchemaStore.class);
     private static final String VECTOR_FIELD = "vector";
     private static final long LOAD_TIMEOUT_MS = 30_000L;
+    /** 启动探活和提问重试都用短超时，避免把窗口或这一轮问答拖住。 */
+    private static final int PROBE_TIMEOUT_MS = 2000;
+    public static final String NOT_CONNECTED = "向量库未连接，请检查 Milvus 是否启动";
     private static final List<String> OUTPUT_FIELDS = List.of(
             "id", "content", "datasourceId", "dbName", "tableName", "objectType");
 
@@ -53,38 +58,70 @@ public class MilvusSchemaStore {
     private final Object lock = new Object();
     private volatile MilvusClientV2 client;
     private volatile boolean ready;
+    private final AtomicBoolean milvusReady = new AtomicBoolean(false);
+    private final AtomicBoolean probeFinished = new AtomicBoolean(false);
+    private final AtomicBoolean probeStarted = new AtomicBoolean(false);
 
     public MilvusSchemaStore(SidekickAiProperties aiProperties, @Lazy SettingsService settingsService) {
         this.aiProperties = aiProperties;
         this.settingsService = settingsService;
     }
 
-    @PostConstruct
-    public void initOnStartup() {
+    /**
+     * Spring 已经打出 Started 之后才探活。这里只拉起线程，连接放在后台，不挡住窗口。
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void probeAfterStartup() {
+        if (!probeStarted.compareAndSet(false, true)) {
+            return;
+        }
+        Thread probe = new Thread(this::probeInBackground, "dbsidekick-milvus-probe");
+        probe.setDaemon(true);
+        probe.start();
+    }
+
+    private void probeInBackground() {
         try {
+            log.info("[Sidekick] Milvus 探活开始");
+            boolean existed = connectAndPrepare(PROBE_TIMEOUT_MS);
             String name = collectionName();
-            boolean existed = collectionExists();
-            // 启动阶段只确保集合存在，不做 sync load（Lite 上空集合 FLAT load 会卡死主线程）
-            ensureCollectionExists();
-            ready = true;
             if (existed) {
                 log.info("[Sidekick] collection {} ready", name);
             } else {
                 log.info("[Sidekick] collection {} created", name);
             }
-            // loadCollection 即使 sync=false，客户端仍会等这次 RPC。
-            // Milvus 异常时这次等待大约 25 秒，会把 Spring 启动和桌面窗口一起挡住。
             Thread load = new Thread(() -> tryLoadAsync(name), "dbsidekick-milvus-load");
             load.setDaemon(true);
             load.start();
         } catch (Exception ex) {
-            ready = false;
+            markDown();
             log.warn("[Sidekick] Milvus not reachable, schema_chunks skipped: {}", ex.getMessage());
+        } finally {
+            probeFinished.set(true);
         }
     }
 
     public boolean isReady() {
-        return ready;
+        return milvusReady.get();
+    }
+
+    public boolean isProbeFinished() {
+        return probeFinished.get();
+    }
+
+    /** 检索前确认连得上。刚才没连上时再试一次，Milvus 后启动也不用重启应用。 */
+    public void requireConnected() {
+        if (milvusReady.get()) {
+            return;
+        }
+        try {
+            connectAndPrepare(PROBE_TIMEOUT_MS);
+            log.info("[Sidekick] Milvus 提问时重新连上");
+        } catch (Exception ex) {
+            markDown();
+            log.warn("[Sidekick] Milvus not reachable, schema_chunks skipped: {}", ex.getMessage());
+            throw new IllegalStateException(NOT_CONNECTED);
+        }
     }
 
     /** 只探测地址，不替换当前连接。成功返回 null。 */
@@ -130,7 +167,7 @@ public class MilvusSchemaStore {
                 this.client = neu;
                 ensureCollectionExists();
                 tryLoadAsync(collectionName());
-                ready = true;
+                markUp();
                 closeQuietly(old);
                 log.info("[Sidekick] milvus reconnected: host={} port={}", host, port);
                 return true;
@@ -158,7 +195,7 @@ public class MilvusSchemaStore {
     public synchronized void ensureCollection() {
         ensureCollectionExists();
         tryLoadAsync(collectionName());
-        ready = true;
+        markUp();
     }
 
     private void ensureCollectionExists() {
@@ -301,6 +338,7 @@ public class MilvusSchemaStore {
             throw new IllegalArgumentException("queryVector 维度必须为 " + dimension());
         }
         int k = Math.max(1, topK);
+        requireConnected();
         MilvusClientV2 milvus = client();
         ensureCollection();
         ensureLoaded(milvus, collectionName());
@@ -492,13 +530,9 @@ public class MilvusSchemaStore {
         }
     }
 
+    /** 只读后台探活结果，健康检查不再自己去连，避免一次请求又等满超时。 */
     public boolean ping() {
-        try {
-            client();
-            return true;
-        } catch (Exception ex) {
-            return false;
-        }
+        return milvusReady.get();
     }
 
     public String collectionName() {
@@ -584,13 +618,63 @@ public class MilvusSchemaStore {
                 return client;
             }
             SidekickAiProperties.Milvus yml = milvusCfg();
-            String uri = "http://" + settingsService.milvusHost() + ":" + settingsService.milvusPort();
-            client = new MilvusClientV2(ConnectConfig.builder()
-                    .uri(uri)
-                    .connectTimeoutMs(yml.getConnectTimeoutMs() > 0 ? yml.getConnectTimeoutMs() : 8000)
-                    .build());
+            int timeout = yml.getConnectTimeoutMs() > 0 ? yml.getConnectTimeoutMs() : 8000;
+            client = openClient(timeout);
             return client;
         }
+    }
+
+    /**
+     * @return 连接前集合是否已经存在
+     */
+    private boolean connectAndPrepare(int timeoutMs) {
+        synchronized (lock) {
+            MilvusClientV2 neu = openClient(timeoutMs);
+            MilvusClientV2 old = this.client;
+            this.client = neu;
+            boolean existed;
+            try {
+                existed = collectionExistsOn(neu);
+                ensureCollectionExists();
+            } catch (Exception ex) {
+                this.client = old;
+                closeQuietly(neu);
+                if (ex instanceof RuntimeException runtime) {
+                    throw runtime;
+                }
+                throw new IllegalStateException(ex.getMessage(), ex);
+            }
+            if (old != null && old != neu) {
+                closeQuietly(old);
+            }
+            markUp();
+            return existed;
+        }
+    }
+
+    private boolean collectionExistsOn(MilvusClientV2 milvus) {
+        return Boolean.TRUE.equals(milvus.hasCollection(HasCollectionReq.builder()
+                .collectionName(collectionName())
+                .build()));
+    }
+
+    private MilvusClientV2 openClient(int timeoutMs) {
+        String uri = "http://" + settingsService.milvusHost() + ":" + settingsService.milvusPort();
+        return new MilvusClientV2(ConnectConfig.builder()
+                .uri(uri)
+                .connectTimeoutMs(timeoutMs)
+                .build());
+    }
+
+    private void markUp() {
+        ready = true;
+        milvusReady.set(true);
+        probeFinished.set(true);
+    }
+
+    private void markDown() {
+        ready = false;
+        milvusReady.set(false);
     }
 
     private SidekickAiProperties.Milvus milvusCfg() {

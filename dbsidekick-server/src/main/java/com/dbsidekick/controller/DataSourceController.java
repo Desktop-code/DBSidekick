@@ -2,7 +2,9 @@ package com.dbsidekick.controller;
 
 import com.dbsidekick.datasource.DbConfig;
 import com.dbsidekick.datasource.DynamicDataSourceManager;
+import com.dbsidekick.schema.SchemaSyncService;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -19,9 +21,12 @@ import org.springframework.web.server.ResponseStatusException;
 public class DataSourceController {
 
     private final DynamicDataSourceManager dataSourceManager;
+    private final SchemaSyncService schemaSyncService;
 
-    public DataSourceController(DynamicDataSourceManager dataSourceManager) {
+    public DataSourceController(DynamicDataSourceManager dataSourceManager,
+                                SchemaSyncService schemaSyncService) {
         this.dataSourceManager = dataSourceManager;
+        this.schemaSyncService = schemaSyncService;
     }
 
     @PostMapping("/add")
@@ -78,6 +83,19 @@ public class DataSourceController {
         } catch (Exception ex) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
                     ex.getMessage() == null ? "预检失败" : ex.getMessage(), ex);
+        }
+    }
+
+    /** 实例下的业务库。会话创建和切库弹窗都用这份列表。 */
+    @GetMapping("/{id}/databases")
+    public List<String> databases(@PathVariable("id") String id) {
+        try {
+            return schemaSyncService.listDatabases(id);
+        } catch (IllegalArgumentException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, ex.getMessage());
+        } catch (Exception ex) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    ex.getMessage() == null ? "读取数据库列表失败" : ex.getMessage(), ex);
         }
     }
 

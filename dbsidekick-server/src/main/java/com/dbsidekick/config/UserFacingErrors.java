@@ -12,6 +12,10 @@ public final class UserFacingErrors {
         if (ex == null) {
             return "操作失败：未知错误";
         }
+        String direct = ex.getMessage();
+        if (direct != null && direct.contains("向量库未连接")) {
+            return direct;
+        }
         String mapped = map(ex);
         return mapped != null ? mapped : ("操作失败：" + simplify(ex.getMessage()));
     }

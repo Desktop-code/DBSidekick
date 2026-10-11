@@ -96,12 +96,13 @@ DBSidekick/
 
 ### 从源码构建
 
-前置：JDK 17、Node 18+、Maven 3.8+。`JAVA_HOME` 指向 JDK 17；Maven 不在 PATH 时再设置 `MVN_CMD`。
+前置：JDK 17、Node 18+、Maven 3.8+。设置 `JAVA_HOME_17` 指向 JDK 17，系统原来的 `JAVA_HOME` 可以继续留给其他版本。Maven 不在 PATH 时再设置 `MVN_CMD`。
 
 ```bat
 git clone https://github.com/Desktop-code/DBSidekick.git
 cd DBSidekick
-set JAVA_HOME=C:\path\to\jdk-17
+set JAVA_HOME_17=C:\path\to\jdk-17
+set MVN_CMD=C:\path\to\mvn.cmd
 dbsidekick-desktop\build-exe.bat
 ```
 

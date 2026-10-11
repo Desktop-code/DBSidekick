@@ -4,6 +4,7 @@
       <span class="menu-item">工具</span>
       <template #dropdown>
         <el-dropdown-menu>
+          <el-dropdown-item command="newSession">新建会话</el-dropdown-item>
           <el-dropdown-item command="openScript">打开脚本</el-dropdown-item>
           <el-dropdown-item command="relations">管理表关系</el-dropdown-item>
           <el-dropdown-item divided command="backup">备份数据</el-dropdown-item>
@@ -103,7 +104,12 @@ function lampClass(state) {
 }
 
 function onTool(cmd) {
-  if (cmd === 'openScript') {
+  if (cmd === 'newSession') {
+    appStore.openSessionDialog({
+      datasourceId: appStore.currentDatasourceId || '',
+      dbName: appStore.currentDatabase || ''
+    })
+  } else if (cmd === 'openScript') {
     appStore.focusFirstScript()
   } else if (cmd === 'relations') {
     const id = appStore.currentDatasourceId

@@ -3,9 +3,11 @@ package com.dbsidekick.controller;
 import com.dbsidekick.asset.ChatSessionService;
 import com.dbsidekick.asset.SessionDetail;
 import com.dbsidekick.asset.SessionSummary;
+import com.dbsidekick.schema.SchemaSyncService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.util.StringUtils;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,9 +25,12 @@ import org.springframework.web.server.ResponseStatusException;
 public class ChatSessionController {
 
     private final ChatSessionService chatSessionService;
+    private final SchemaSyncService schemaSyncService;
 
-    public ChatSessionController(ChatSessionService chatSessionService) {
+    public ChatSessionController(ChatSessionService chatSessionService,
+                                 SchemaSyncService schemaSyncService) {
         this.chatSessionService = chatSessionService;
+        this.schemaSyncService = schemaSyncService;
     }
 
     @PostMapping("/new")
@@ -33,6 +38,12 @@ public class ChatSessionController {
         try {
             String datasourceId = body == null ? null : body.get("datasourceId");
             String dbName = body == null ? null : body.get("dbName");
+            if (!StringUtils.hasText(dbName) && StringUtils.hasText(datasourceId)) {
+                List<String> names = schemaSyncService.listDatabases(datasourceId);
+                if (names != null && !names.isEmpty()) {
+                    dbName = names.get(0);
+                }
+            }
             String sessionId = chatSessionService.createSession(datasourceId, dbName);
             Map<String, Object> resp = new LinkedHashMap<>();
             resp.put("sessionId", sessionId);

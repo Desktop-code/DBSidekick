@@ -23,3 +23,7 @@ export function deleteCheckDatasource(id) {
 export function testDatasource(config) {
   return request.post('/datasource/test', config)
 }
+
+export function listInstanceDatabases(id) {
+  return request.get(`/datasource/${id}/databases`)
+}

@@ -43,11 +43,12 @@ export const useTabsStore = defineStore('tabs', {
       this.activeId = id
       return tab
     },
-    openAiChat({ datasourceId, sessionId, title, draft, autoSend } = {}) {
+    openAiChat({ datasourceId, dbName, sessionId, title, draft, autoSend } = {}) {
       return this.addTab(
         'aiChat',
         {
           datasourceId: datasourceId || null,
+          dbName: dbName || '',
           sessionId: sessionId || null,
           draft: draft || '',
           autoSend: !!autoSend

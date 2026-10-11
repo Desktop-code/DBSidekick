@@ -4,13 +4,16 @@
       <div class="left">
         <span class="title clickable" title="点击重命名" @click="onRenameTitle">{{ sessionTitle }}</span>
         <div class="ds-wrap">
+          <el-icon v-if="currentDs" class="ds-type-icon" :class="dsKind(currentDs)" :title="dialectOf(currentDs)">
+            <Coin />
+          </el-icon>
           <el-select
             v-model="localDsId"
             size="small"
             placeholder="选择数据源"
-            style="width: 200px"
-            :disabled="streaming"
-            @change="onDsChange"
+            class="header-select"
+            :disabled="headerLocked"
+            @change="onPickDatasource"
           >
             <el-option
               v-for="d in appStore.datasources"
@@ -19,10 +22,19 @@
               :value="d.id"
             />
           </el-select>
-          <el-icon v-if="currentDs" class="ds-type-icon" :class="dsKind(currentDs)" :title="dialectOf(currentDs)">
-            <Coin />
-          </el-icon>
-          <span v-if="appStore.currentDatabase" class="ds-db">{{ appStore.currentDatabase }}</span>
+          <span class="sep">·</span>
+          <el-select
+            v-model="localDb"
+            size="small"
+            placeholder="选择数据库"
+            class="header-select"
+            filterable
+            :disabled="headerLocked || !localDsId"
+            :loading="dbLoading"
+            @change="onPickDatabase"
+          >
+            <el-option v-for="name in dbOptions" :key="name" :label="name" :value="name" />
+          </el-select>
         </div>
       </div>
       <el-button class="clear-btn" text :disabled="streaming" @click="clearChat">清空对话</el-button>
@@ -36,7 +48,7 @@
             v-for="q in exampleQuestions"
             :key="q"
             round
-            :disabled="!localDsId"
+            :disabled="!localDsId || !localDb"
             @click="askExample(q)"
           >
             {{ q }}
@@ -216,22 +228,40 @@
     </div>
 
     <div class="composer">
-      <div class="input-wrapper" :class="{ focused: composerFocus, disabled: streaming || !localDsId }">
+      <div v-if="contextLabel" class="composer-context">{{ contextLabel }}</div>
+      <div class="input-wrapper" :class="{ focused: composerFocus, disabled: streaming }">
         <textarea
           ref="composerRef"
           v-model="input"
           class="input-textarea"
-          :disabled="streaming || !localDsId"
-          placeholder="输入问题，Enter 发送，Shift+Enter 换行"
+          rows="1"
+          :disabled="streaming"
+          placeholder="输入问题..."
+          @input="resizeComposer"
           @keydown="onKeydown"
           @focus="composerFocus = true"
           @blur="composerFocus = false"
         />
         <div class="input-footer">
-          <span v-if="!localDsId" class="hint warn">请先选择数据源</span>
-          <span v-else class="hint">Enter 发送 · Shift+Enter 换行</span>
-          <el-button type="primary" :disabled="!canSend" :loading="streaming" @click="send">发送</el-button>
+          <span class="hint">Enter 发送 · Shift+Enter 换行</span>
+          <el-button type="primary" size="small" :disabled="!canSend" :loading="streaming" @click="send">发送</el-button>
         </div>
+      </div>
+      <div class="composer-tools">
+        <div class="tool-left">
+          <el-button text size="small" :disabled="streaming" @click="clearChat">清空对话</el-button>
+          <el-dropdown trigger="click" :disabled="streaming" @command="insertSql">
+            <el-button text size="small" :disabled="streaming">插入常用SQL</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="item in SQL_SNIPPETS" :key="item.label" :command="item.sql">
+                  {{ item.label }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
+        <span class="char-count" :class="{ over: input.length > INPUT_MAX }">{{ input.length }} / {{ INPUT_MAX }}</span>
       </div>
     </div>
 
@@ -256,6 +286,7 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Coin, CopyDocument, EditPen, FolderAdd } from '@element-plus/icons-vue'
+import { listInstanceDatabases } from '../../api/datasource'
 import { streamQuery } from '../../api/text2sql'
 import { saveScript } from '../../api/script'
 import { getSession, renameSession, frequentQuestions } from '../../api/session'
@@ -272,11 +303,24 @@ const tabsStore = useTabsStore()
 /** AI 对话结果表分页：超过此数量才显示分页，每页条数 */
 const resultPageSize = ref(10)
 
+const INPUT_MAX = 2000
+const SQL_SNIPPETS = [
+  { label: '查询前 100 行', sql: 'SELECT * FROM  LIMIT 100' },
+  { label: '按字段计数', sql: 'SELECT  , COUNT(*) AS cnt\nFROM  \nGROUP BY  \nORDER BY cnt DESC' },
+  { label: '按条件筛选', sql: 'SELECT * FROM  WHERE  ' }
+]
+
 const sessionId = ref(props.tab?.props?.sessionId || '')
 const sessionTitle = ref(props.tab?.title?.replace(/^AI会话:\s*/, '') || '新会话')
 const localDsId = ref(
   props.tab?.props?.datasourceId || props.tab?.datasourceId || appStore.currentDatasourceId || ''
 )
+const localDb = ref(props.tab?.props?.dbName || appStore.currentDatabase || '')
+const boundDsId = ref(localDsId.value)
+const boundDb = ref(localDb.value)
+const dbOptions = ref([])
+const dbLoading = ref(false)
+const applyingBinding = ref(false)
 const input = ref(props.tab?.props?.draft || '')
 const composerRef = ref(null)
 const composerFocus = ref(false)
@@ -292,7 +336,21 @@ const saveSql = ref('')
 const saving = ref(false)
 
 const currentDs = computed(() => appStore.datasources.find((d) => d.id === localDsId.value) || null)
-const canSend = computed(() => !!localDsId.value && !!input.value.trim() && !streaming.value)
+const canSend = computed(
+  () =>
+    !!localDsId.value
+    && !!localDb.value
+    && !!input.value.trim()
+    && input.value.length <= INPUT_MAX
+    && !streaming.value
+)
+const headerLocked = computed(() => streaming.value || loadingSession.value)
+const contextLabel = computed(() => {
+  if (!currentDs.value) return ''
+  return localDb.value
+    ? `当前数据源：${currentDs.value.name} · ${localDb.value}`
+    : `当前数据源：${currentDs.value.name}`
+})
 const saveDsLabel = computed(() => {
   const d = currentDs.value
   if (!d) return '未选择'
@@ -523,7 +581,8 @@ function syncTabMeta() {
     props: {
       ...(props.tab.props || {}),
       sessionId: sessionId.value || null,
-      datasourceId: localDsId.value || null
+      datasourceId: localDsId.value || null,
+      dbName: localDb.value || ''
     }
   })
 }
@@ -549,15 +608,143 @@ watch(resultPageSize, () => {
   }
 })
 
-async function onDsChange(id) {
-  appStore.setCurrentDatasource(id)
-  // 换库必须新开会话，避免跨库污染。没提问前不落库。
-  if (streaming.value) return
-  messages.value = []
-  sessionId.value = ''
-  sessionTitle.value = '新会话'
+function needsNewSession() {
+  return messages.value.length > 0 || !!sessionId.value
+}
+
+async function loadDbOptions(dsId, pickFirstIfMissing = false) {
+  if (!dsId) {
+    dbOptions.value = []
+    return
+  }
+  dbLoading.value = true
+  applyingBinding.value = true
+  try {
+    const names = await listInstanceDatabases(dsId)
+    dbOptions.value = Array.isArray(names) ? names : []
+    if (localDb.value && dbOptions.value.includes(localDb.value)) return
+    if (pickFirstIfMissing && dbOptions.value.length) {
+      const first = dbOptions.value[0]
+      boundDb.value = first
+      localDb.value = first
+      appStore.setCurrentDatabase(first)
+    }
+  } catch {
+    dbOptions.value = localDb.value ? [localDb.value] : []
+  } finally {
+    dbLoading.value = false
+    await nextTick()
+    applyingBinding.value = false
+  }
+}
+
+function openBoundChat(dsId, db) {
+  appStore.setCurrentDatasource(dsId)
+  appStore.setCurrentDatabase(db)
   appStore.setCurrentSessionId(null)
-  syncTabMeta()
+  tabsStore.openAiChat({
+    datasourceId: dsId,
+    dbName: db,
+    title: 'AI会话: 新会话'
+  })
+}
+
+async function onPickDatasource(nextId) {
+  if (applyingBinding.value) return
+  const prev = boundDsId.value
+  if (!nextId || nextId === prev) {
+    localDsId.value = prev
+    return
+  }
+  if (!needsNewSession()) {
+    boundDsId.value = nextId
+    localDb.value = ''
+    boundDb.value = ''
+    appStore.setCurrentDatasource(nextId)
+    await loadDbOptions(nextId, true)
+    syncTabMeta()
+    return
+  }
+  try {
+    await ElMessageBox.confirm('是否新建会话？当前会话会保留。', '切换数据源', {
+      confirmButtonText: '是',
+      cancelButtonText: '否',
+      type: 'warning'
+    })
+    const names = await listInstanceDatabases(nextId)
+    const list = Array.isArray(names) ? names : []
+    const db = list.includes(boundDb.value) ? boundDb.value : list[0]
+    if (!db) {
+      ElMessage.warning('该数据源下没有可用的库')
+    } else {
+      openBoundChat(nextId, db)
+    }
+  } catch {
+    // 取消则回到原来的数据源
+  }
+  localDsId.value = prev
+}
+
+async function onPickDatabase(next) {
+  if (applyingBinding.value) return
+  const prev = boundDb.value
+  if (!next || next === prev) {
+    localDb.value = prev
+    return
+  }
+  if (!needsNewSession()) {
+    boundDb.value = next
+    appStore.setCurrentDatabase(next)
+    syncTabMeta()
+    return
+  }
+  try {
+    await ElMessageBox.confirm('是否新建会话？当前会话会保留。', '切换数据库', {
+      confirmButtonText: '是',
+      cancelButtonText: '否',
+      type: 'warning'
+    })
+    openBoundChat(boundDsId.value || localDsId.value, next)
+  } catch {
+    // 取消则回到原来的库
+  }
+  localDb.value = prev
+}
+
+function restoreBinding() {
+  if (localDsId.value && appStore.currentDatasourceId !== localDsId.value) {
+    appStore.setCurrentDatasource(localDsId.value)
+  }
+  if (localDb.value) appStore.setCurrentDatabase(localDb.value)
+  appStore.setCurrentSessionId(sessionId.value || null)
+}
+
+function resizeComposer() {
+  const el = composerRef.value
+  if (!el) return
+  const line = 22
+  const max = line * 6
+  el.style.height = 'auto'
+  const next = Math.min(max, Math.max(line, el.scrollHeight))
+  el.style.height = `${next}px`
+  el.style.overflowY = el.scrollHeight > max ? 'auto' : 'hidden'
+}
+
+function insertSql(sql) {
+  const el = composerRef.value
+  const cur = input.value || ''
+  const text = String(sql || '')
+  if (!el) {
+    input.value = cur + text
+  } else {
+    const start = el.selectionStart ?? cur.length
+    const end = el.selectionEnd ?? start
+    input.value = cur.slice(0, start) + text + cur.slice(end)
+  }
+  nextTick(() => {
+    resizeComposer()
+    composerRef.value?.focus?.()
+  })
 }
 
 async function onRenameTitle() {
@@ -672,6 +859,20 @@ async function loadExistingSession(id) {
     if (detail.datasourceId) {
       localDsId.value = detail.datasourceId
       appStore.setCurrentDatasource(detail.datasourceId)
+    }
+    // 会话绑定的是当时那个库。只恢复数据源时，连接上若没写默认库，再提问会被要求重选。
+    if (detail.dbName) {
+      localDb.value = detail.dbName
+      boundDb.value = detail.dbName
+      appStore.setCurrentDatabase(detail.dbName)
+    }
+    boundDsId.value = localDsId.value
+    await loadDbOptions(localDsId.value, !detail.dbName)
+    if (detail.dbName) {
+      localDb.value = detail.dbName
+      boundDb.value = detail.dbName
+    } else {
+      boundDb.value = localDb.value
     }
     messages.value = mapHistoryMessages(detail.messages)
     appStore.setCurrentSessionId(sessionId.value)
@@ -860,14 +1061,15 @@ function typewriter(target, fullText, onTick) {
 
 async function send() {
   if (!canSend.value) return
-  const database = appStore.currentDatabase || currentDs.value?.database
+  const database = localDb.value
   if (!database) {
-    ElMessage.warning('请先在左侧选择数据库')
+    ElMessage.warning('请先选择数据库')
     return
   }
   const question = input.value.trim()
   const dsId = localDsId.value
   input.value = ''
+  nextTick(() => resizeComposer())
   const sid = sessionId.value || ''
 
   messages.value.push({ role: 'user', content: question })
@@ -1020,7 +1222,13 @@ onMounted(async () => {
   const existingId = props.tab?.props?.sessionId
   if (existingId) {
     await loadExistingSession(existingId)
+  } else if (localDsId.value) {
+    boundDsId.value = localDsId.value
+    await loadDbOptions(localDsId.value, !localDb.value)
+    boundDb.value = localDb.value
   }
+  await nextTick()
+  resizeComposer()
   const draft = props.tab?.props?.draft
   if (draft) {
     input.value = draft
@@ -1053,6 +1261,12 @@ watch(
     }
   }
 )
+
+watch(() => tabsStore.activeId, (id) => {
+  if (id === props.tab?.id) restoreBinding()
+})
+
+watch(input, () => nextTick(() => resizeComposer()))
 </script>
 
 <style scoped>
@@ -1063,7 +1277,7 @@ watch(
   min-height: 0;
 }
 .chat-header {
-  height: 48px;
+  min-height: 48px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1096,6 +1310,13 @@ watch(
   align-items: center;
   gap: 6px;
   min-width: 0;
+}
+.header-select {
+  width: 160px;
+}
+.sep {
+  color: #94a3b8;
+  font-size: 12px;
 }
 .ds-type-icon {
   font-size: 14px;
@@ -1578,19 +1799,25 @@ watch(
   max-width: 560px;
 }
 .composer {
-  padding: 0 16px 16px;
+  padding: 0 16px 12px;
   background: #f8fafc;
+}
+.composer-context {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: #94a3b8;
+  text-align: left;
 }
 .input-wrapper {
   background: #fff;
-  border: 1px solid var(--sk-border, #e2e8f0);
+  border: 1px solid #d0d5dd;
   border-radius: 8px;
-  padding: 10px 12px 8px;
+  padding: 8px 12px 8px;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .input-wrapper.focused {
   border-color: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.28);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
 }
 .input-wrapper.disabled {
   background: #f8fafc;
@@ -1598,15 +1825,37 @@ watch(
 .input-textarea {
   display: block;
   width: 100%;
-  min-height: 60px;
+  height: 22px;
+  min-height: 22px;
+  max-height: 132px;
   border: none;
   outline: none;
   resize: none;
+  overflow-y: hidden;
   background: transparent;
   color: var(--sk-text-primary, #1e293b);
   font-size: 14px;
   font-family: inherit;
-  line-height: 1.5;
+  line-height: 22px;
+  padding: 0;
+}
+.composer-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+.tool-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.char-count {
+  font-size: 12px;
+  color: #94a3b8;
+}
+.char-count.over {
+  color: #dc2626;
 }
 .input-footer {
   display: flex;
