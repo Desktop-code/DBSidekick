@@ -4,6 +4,10 @@ export function listRelations(params) {
   return request.get('/relation/list', { params })
 }
 
+export function getRelationGraph(params) {
+  return request.get('/relation/graph', { params })
+}
+
 export function confirmRelation(id) {
   return request.put(`/relation/${id}/confirm`)
 }

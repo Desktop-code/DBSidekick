@@ -1,32 +1,53 @@
 <template>
   <div class="rel-manage">
     <div class="head">
-      <span class="title">表关系管理</span>
-      <div class="filters">
-        <el-select v-model="dsId" size="small" filterable placeholder="数据源" style="width: 200px" @change="onSearch">
+      <div class="filters-left">
+        <el-select v-model="dsId" size="small" filterable placeholder="数据源" class="flt-ds" @change="onDsChange">
           <el-option v-for="d in appStore.datasources" :key="d.id" :label="d.name" :value="d.id" />
         </el-select>
-        <el-select v-model="status" size="small" style="width: 120px" @change="onSearch">
+        <el-select
+          v-model="dbName"
+          size="small"
+          filterable
+          placeholder="选择库"
+          class="flt-db"
+          :loading="dbLoading"
+          :disabled="!dsId"
+          @change="onDbChange"
+        >
+          <el-option v-for="name in dbOptions" :key="name" :label="name" :value="name" />
+        </el-select>
+        <el-select v-if="viewMode === 'table'" v-model="status" size="small" class="flt-status" @change="onSearch">
           <el-option label="全部" value="" />
           <el-option label="已确认" value="CONFIRMED" />
           <el-option label="待审" value="PENDING" />
           <el-option label="已拒绝" value="REJECTED" />
         </el-select>
         <el-input
+          v-if="viewMode === 'table'"
           v-model="keyword"
           size="small"
           clearable
           placeholder="表名或字段名"
-          style="width: 180px"
+          class="flt-search"
           @keyup.enter="onSearch"
           @clear="onSearch"
         />
-        <el-button size="small" @click="onSearch">搜索</el-button>
-        <el-button size="small" @click="openSettings">设置</el-button>
+        <el-button v-if="viewMode === 'table'" size="small" @click="onSearch">搜索</el-button>
       </div>
+      <el-tooltip content="设置" placement="bottom">
+        <el-button size="small" class="btn-settings" :icon="Setting" @click="openSettings" />
+      </el-tooltip>
     </div>
 
-    <div class="table-wrap">
+    <div class="view-tabs">
+      <el-radio-group v-model="viewMode" size="small">
+        <el-radio-button value="table">表格视图</el-radio-button>
+        <el-radio-button value="graph">图视图</el-radio-button>
+      </el-radio-group>
+    </div>
+
+    <div v-show="viewMode === 'table'" class="table-wrap">
       <el-table
         :data="items"
         size="small"
@@ -103,7 +124,7 @@
       </el-table>
     </div>
 
-    <div class="pager">
+    <div v-show="viewMode === 'table'" class="pager">
       <el-pagination
         background
         layout="total, prev, pager, next"
@@ -112,6 +133,10 @@
         :current-page="page"
         @current-change="onPage"
       />
+    </div>
+
+    <div v-if="viewMode === 'graph'" class="graph-wrap">
+      <RelationErGraph ref="graphRef" :datasource-id="dsId" :database="dbName" />
     </div>
 
     <el-drawer v-model="settingsOpen" title="关系学习设置" size="420px">
@@ -185,8 +210,9 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref, watch } from 'vue'
+import { nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Setting } from '@element-plus/icons-vue'
 import {
   confirmRelation,
   getRelationConfig,
@@ -195,6 +221,9 @@ import {
   resetRelation,
   updateRelationConfig
 } from '../../api/relation'
+import { listInstanceDatabases } from '../../api/datasource'
+import { listDatabases } from '../../api/schema'
+import RelationErGraph from '../relation/RelationErGraph.vue'
 import { useAppStore } from '../../stores/app'
 
 const props = defineProps({
@@ -203,6 +232,11 @@ const props = defineProps({
 
 const appStore = useAppStore()
 const dsId = ref(props.tab?.props?.datasourceId || appStore.currentDatasourceId || '')
+const dbName = ref(props.tab?.props?.dbName || appStore.currentDatabase || '')
+const dbOptions = ref([])
+const dbLoading = ref(false)
+const viewMode = ref('table')
+const graphRef = ref(null)
 const status = ref('')
 const keyword = ref('')
 const page = ref(1)
@@ -234,9 +268,10 @@ const form = reactive({
 
 watch(
   () => props.tab?.props?.datasourceId,
-  (v) => {
+  async (v) => {
     if (v && v !== dsId.value) {
       dsId.value = v
+      await loadDbOptions(true)
       onSearch()
     }
   }
@@ -244,12 +279,74 @@ watch(
 
 watch(
   () => props.tab?.props?.reloadToken,
-  () => {
+  async () => {
     const v = props.tab?.props?.datasourceId
     if (v) dsId.value = v
+    const db = props.tab?.props?.dbName
+    if (db) dbName.value = db
+    await loadDbOptions(false)
     load()
+    if (viewMode.value === 'graph') graphRef.value?.reload?.()
   }
 )
+
+watch(viewMode, async (mode) => {
+  if (mode === 'graph') {
+    await nextTick()
+    // v-if 挂载后组件自行 reload；再触一次 resize
+    graphRef.value?.reload?.()
+  }
+})
+
+async function loadDbOptions(preferCurrent = true) {
+  if (!dsId.value) {
+    dbOptions.value = []
+    dbName.value = ''
+    return
+  }
+  dbLoading.value = true
+  try {
+    let list = []
+    try {
+      const synced = await listDatabases(dsId.value)
+      if (Array.isArray(synced) && synced.length) {
+        list = synced.map((x) => (typeof x === 'string' ? x : x?.name || x?.dbName)).filter(Boolean)
+      }
+    } catch {
+      /* 回落到实例库列表 */
+    }
+    if (!list.length) {
+      const live = await listInstanceDatabases(dsId.value)
+      list = Array.isArray(live) ? live.map((x) => (typeof x === 'string' ? x : x?.name)).filter(Boolean) : []
+    }
+    dbOptions.value = [...new Set(list)]
+    const prefer = preferCurrent
+      ? props.tab?.props?.dbName || appStore.currentDatabase || dbName.value
+      : dbName.value
+    if (prefer && dbOptions.value.includes(prefer)) {
+      dbName.value = prefer
+    } else if (dbName.value && !dbOptions.value.includes(dbName.value)) {
+      dbName.value = dbOptions.value[0] || ''
+    } else if (!dbName.value && dbOptions.value.length) {
+      dbName.value = dbOptions.value[0]
+    }
+  } catch {
+    dbOptions.value = []
+  } finally {
+    dbLoading.value = false
+  }
+}
+
+async function onDsChange() {
+  dbName.value = ''
+  await loadDbOptions(true)
+  onSearch()
+}
+
+function onDbChange() {
+  onSearch()
+  if (viewMode.value === 'graph') graphRef.value?.reload?.()
+}
 
 /** CONFIRMED+强信号→已确认；CONFIRMED 无强信号→自动推断；其余按 status */
 function kindLabel(row) {
@@ -303,6 +400,7 @@ async function load() {
   try {
     const res = await listRelations({
       datasourceId: dsId.value,
+      database: dbName.value || undefined,
       status: status.value || undefined,
       keyword: keyword.value.trim() || undefined,
       page: page.value,
@@ -322,6 +420,7 @@ async function onConfirm(row) {
     await confirmRelation(row.id)
     ElMessage.success('已确认')
     await load()
+    graphRef.value?.reload?.()
   } catch {
     /* 拦截器已提示 */
   }
@@ -332,6 +431,7 @@ async function onReject(row) {
     await rejectRelation(row.id)
     ElMessage.success(row.status === 'CONFIRMED' ? '已禁用' : '已拒绝')
     await load()
+    graphRef.value?.reload?.()
   } catch {
     /* 拦截器已提示 */
   }
@@ -342,6 +442,7 @@ async function onReset(row) {
     await resetRelation(row.id)
     ElMessage.success('已恢复为待审')
     await load()
+    graphRef.value?.reload?.()
   } catch {
     /* 拦截器已提示 */
   }
@@ -442,6 +543,10 @@ onMounted(async () => {
   if (!dsId.value && appStore.currentDatasourceId) {
     dsId.value = appStore.currentDatasourceId
   }
+  if (!dbName.value && appStore.currentDatabase) {
+    dbName.value = appStore.currentDatabase
+  }
+  await loadDbOptions(true)
   await load()
 })
 </script>
@@ -462,22 +567,51 @@ onMounted(async () => {
   align-items: center;
   gap: 12px;
   flex-shrink: 0;
+  flex-wrap: nowrap;
 }
-.title {
-  font-weight: 600;
-  font-size: 14px;
-  white-space: nowrap;
-}
-.filters {
+.filters-left {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+.flt-ds {
+  width: 180px;
+  flex-shrink: 0;
+}
+.flt-db {
+  width: 160px;
+  flex-shrink: 0;
+}
+.flt-status {
+  width: 110px;
+  flex-shrink: 0;
+}
+.flt-search {
+  width: 160px;
+  min-width: 100px;
+  flex: 1 1 120px;
+  max-width: 220px;
+}
+.btn-settings {
+  flex-shrink: 0;
+  width: 32px;
+  padding: 0;
+}
+.view-tabs {
+  flex-shrink: 0;
 }
 .table-wrap {
   flex: 1;
   min-height: 0;
+}
+.graph-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 .pager {
   display: flex;

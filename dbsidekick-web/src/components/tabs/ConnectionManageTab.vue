@@ -1,7 +1,7 @@
 <template>
   <div class="conn-manage">
     <div class="head">
-      <span class="title">连接管理</span>
+      <div class="head-spacer" />
       <el-button type="primary" size="small" @click="openCreate">+ 新建连接</el-button>
     </div>
     <div class="table-wrap">
@@ -180,10 +180,11 @@ defineExpose({ openCreate, openEdit })
   justify-content: space-between;
   align-items: center;
   flex-shrink: 0;
+  gap: 8px;
 }
-.title {
-  font-weight: 600;
-  font-size: 14px;
+.head-spacer {
+  flex: 1;
+  min-width: 0;
 }
 .table-wrap {
   flex: 1;

@@ -57,69 +57,10 @@
       </div>
       <div v-for="(msg, idx) in messages" :key="idx" class="msg" :class="msg.role">
         <div v-if="msg.role === 'user'" class="bubble user-bubble">{{ msg.content }}</div>
-        <div v-else class="bubble ai-bubble">
-          <!-- 推理过程 -->
-          <section v-if="msg.phases?.length || showReasoningThinking(msg, idx)" class="section section-reason">
-            <button type="button" class="reason-head" @click="toggleReason(msg, idx)">
-              <span class="reason-mark" :class="reasonState(msg, idx)">
-                <i v-if="reasonState(msg, idx) === 'running'" class="mini-spin" />
-                <template v-else-if="reasonState(msg, idx) === 'fail'">✗</template>
-                <template v-else>✓</template>
-              </span>
-              <span class="reason-title">推理过程</span>
-              <span class="reason-sep">·</span>
-              <span>{{ reasonStateText(msg, idx) }}</span>
-              <span class="reason-sep">·</span>
-              <span>耗时 {{ formatDuration(reasonTotalMs(msg)) }}</span>
-              <span class="reason-toggle">{{ isReasonOpen(msg, idx) ? '收起 ⌃' : '展开 ⌄' }}</span>
-            </button>
-            <div class="reason-panel" :class="{ open: isReasonOpen(msg, idx) }">
-              <div class="reason-panel-inner">
-                <div
-                  v-for="(p, i) in msg.phases"
-                  :key="i"
-                  class="phase-line"
-                  :class="phaseMark(p)"
-                >
-                  <div class="phase-head">
-                    <span class="icon">{{ phaseIcon(p) }}</span>
-                    <span class="phase-title">
-                      <span class="phase-name">{{ p.phase || '阶段' }}</span>
-                      <el-tooltip
-                        v-if="phaseSource(p.phase)"
-                        :content="phaseSource(p.phase).tip"
-                        placement="top"
-                        :show-after="300"
-                      >
-                        <span class="phase-src" :class="phaseSource(p.phase).kind">{{ phaseSource(p.phase).label }}</span>
-                      </el-tooltip>
-                    </span>
-                    <span class="phase-time">{{ p.elapsedMs ?? 0 }}ms</span>
-                  </div>
-                  <el-tooltip
-                    v-if="p.content"
-                    :content="p.content"
-                    placement="top"
-                    :disabled="String(p.content).length <= 80"
-                    :show-after="300"
-                    popper-class="phase-content-tip"
-                  >
-                    <div class="phase-content" :class="phaseContentClass(p)">{{ truncate(p.content, 80) }}</div>
-                  </el-tooltip>
-                </div>
-                <div v-if="showReasoningThinking(msg, idx)" class="thinking-hint" aria-live="polite">
-                  <span class="thinking-label">thinking</span>
-                  <span class="thinking-dots" aria-hidden="true">
-                    <i /><i /><i />
-                  </span>
-                </div>
-              </div>
-            </div>
-          </section>
-
+        <div v-else class="ai-stack">
           <div
             v-if="msg.pending && !msg.error && !msg.sql && !msg.phases?.length && !showReasoningThinking(msg, idx)"
-            class="pending"
+            class="pending ai-card"
           >
             <span class="thinking-label">thinking</span>
             <span class="thinking-dots" aria-hidden="true">
@@ -127,132 +68,219 @@
             </span>
           </div>
 
-          <!-- 查询结果：等推理打完再出现 -->
-          <section
-            v-if="msg.summary || msg.error || msg.sql || msg.columns?.length"
-            class="section section-result"
-            :class="{ 'has-reason-above': msg.phases?.length }"
+          <div
+            v-if="hasReasonSection(msg, idx) || hasResultSection(msg)"
+            class="ai-card"
           >
-            <div v-if="msg.summary" class="summary">{{ msg.summary }}</div>
-            <div v-if="msg.error" class="err">{{ msg.error }}</div>
-            <div v-if="msg.sql" class="sql-block">
-              <div class="sql-head">
-                <span class="sql-title">{{ msg.scriptMode ? 'SQL 脚本' : 'SQL' }}</span>
-                <div class="btns">
-                  <el-tooltip content="复制" placement="top">
-                    <el-button text :icon="CopyDocument" @click="copySql(msg.sql)" />
-                  </el-tooltip>
-                  <el-tooltip content="在编辑器中打开" placement="top">
-                    <el-button text :icon="EditPen" @click="openInEditor(msg.sql)" />
-                  </el-tooltip>
-                  <el-tooltip content="保存到脚本库" placement="top">
-                    <el-button text :icon="FolderAdd" @click="openSaveScript(msg.sql)" />
-                  </el-tooltip>
-                  <span class="page-size-label">每页</span>
-                  <el-radio-group
-                    v-model="resultPageSize"
-                    size="small"
-                    class="page-size-switch"
+            <!-- 区域 1：推理过程 -->
+            <section
+              v-if="hasReasonSection(msg, idx)"
+              class="ai-card-block section-reason"
+            >
+              <button type="button" class="card-head reason-head" @click="toggleReason(msg, idx)">
+                <span class="reason-mark" :class="reasonState(msg, idx)">
+                  <i v-if="reasonState(msg, idx) === 'running'" class="mini-spin" />
+                  <template v-else-if="reasonState(msg, idx) === 'fail'">✗</template>
+                  <template v-else>✓</template>
+                </span>
+                <span class="card-title">推理过程</span>
+                <span class="card-sep">·</span>
+                <span class="card-meta">{{ reasonStateText(msg, idx) }}</span>
+                <span class="card-sep">·</span>
+                <span class="card-meta">{{ formatDuration(reasonTotalMs(msg)) }}</span>
+                <span class="reason-toggle">{{ isReasonOpen(msg, idx) ? '收起 ⌃' : '展开 ⌄' }}</span>
+              </button>
+              <div class="reason-panel" :class="{ open: isReasonOpen(msg, idx) }">
+                <div class="reason-panel-inner">
+                  <div
+                    v-for="(p, i) in msg.phases"
+                    :key="i"
+                    class="phase-line"
+                    :class="phaseMark(p)"
                   >
-                    <el-radio-button :value="10">10</el-radio-button>
-                    <el-radio-button :value="20">20</el-radio-button>
-                    <el-radio-button :value="50">50</el-radio-button>
-                  </el-radio-group>
+                    <div class="phase-head">
+                      <span class="icon">{{ phaseIcon(p) }}</span>
+                      <span class="phase-title">
+                        <span class="phase-name">{{ p.phase || '阶段' }}</span>
+                        <el-tooltip
+                          v-if="phaseSource(p.phase)"
+                          :content="phaseSource(p.phase).tip"
+                          placement="top"
+                          :show-after="300"
+                        >
+                          <span class="phase-src" :class="phaseSource(p.phase).kind">{{ phaseSource(p.phase).label }}</span>
+                        </el-tooltip>
+                      </span>
+                      <span class="phase-time">{{ p.elapsedMs ?? 0 }}ms</span>
+                    </div>
+                    <el-tooltip
+                      v-if="p.content"
+                      :content="p.content"
+                      placement="top"
+                      :disabled="String(p.content).length <= 80"
+                      :show-after="300"
+                      popper-class="phase-content-tip"
+                    >
+                      <div class="phase-content" :class="phaseContentClass(p)">{{ truncate(p.content, 80) }}</div>
+                    </el-tooltip>
+                  </div>
+                  <div v-if="showReasoningThinking(msg, idx)" class="thinking-hint" aria-live="polite">
+                    <span class="thinking-label">thinking</span>
+                    <span class="thinking-dots" aria-hidden="true">
+                      <i /><i /><i />
+                    </span>
+                  </div>
                 </div>
               </div>
-              <div class="sql-code">
-                <span class="sql-corner">SQL</span>
-                <div
-                  v-for="(line, li) in highlightedSqlLines(msg.sql)"
-                  :key="li"
-                  class="sql-line"
-                >
-                  <span class="ln">{{ li + 1 }}</span>
-                  <code v-html="line"></code>
-                </div>
-              </div>
-            </div>
-            <el-collapse
-              v-if="msg.scriptMode && msg.scriptSteps?.length"
-              class="script-steps"
-            >
-              <el-collapse-item title="中间步骤" name="steps">
-                <div
-                  v-for="(s, si) in msg.scriptSteps"
-                  :key="si"
-                  class="script-step-row"
-                >
-                  <span class="idx">#{{ (s.index ?? si) + 1 }}</span>
-                  <span class="meta">
-                    {{ s.isFinalSelect ? '最终 SELECT' : '步骤' }}
-                    · {{ s.rowCount ?? 0 }} 行
-                    · {{ s.elapsedMs ?? 0 }}ms
-                    <span v-if="s.error" class="step-err"> · {{ s.error }}</span>
-                  </span>
-                  <pre class="step-sql">{{ s.sql }}</pre>
-                </div>
-              </el-collapse-item>
-            </el-collapse>
+            </section>
+
             <div
-              v-if="canShowFeedback(msg)"
-              class="result-feedback"
+              v-if="hasReasonSection(msg, idx) && hasResultSection(msg)"
+              class="ai-card-divider"
+              aria-hidden="true"
+            />
+
+            <!-- 区域 2：查询结果 -->
+            <section
+              v-if="hasResultSection(msg)"
+              class="ai-card-block section-result"
+              :class="{ 'is-fail': !!msg.error }"
             >
-              <span class="feedback-label">这个结果对你有帮助吗？</span>
-              <button
-                type="button"
-                class="feedback-btn"
-                :class="{ active: msg.feedback === 'USEFUL' }"
-                :disabled="!!msg.feedback || feedbackBusy === idx"
-                @click="onResultFeedback(msg, 'USEFUL')"
-              >👍 有用</button>
-              <button
-                type="button"
-                class="feedback-btn"
-                :class="{ active: msg.feedback === 'USELESS' }"
-                :disabled="!!msg.feedback || feedbackBusy === idx"
-                @click="onResultFeedback(msg, 'USELESS')"
-              >👎 没用</button>
-            </div>
-            <div v-if="msg.columns?.length" class="table-block">
-              <div class="table-meta">
-                <span class="badge badge-rows">✓ {{ msg.rowCount ?? 0 }} 行</span>
-                <span v-if="msg.truncated" class="badge badge-trunc">已截断</span>
-                <span
-                  v-if="msg.elapsedMs != null"
-                  class="badge badge-time"
-                  :class="elapsedBadgeClass(msg.elapsedMs)"
-                >⚡ {{ formatDuration(msg.elapsedMs) }}</span>
+              <div class="card-head result-head" :class="{ fail: !!msg.error }">
+                <el-icon v-if="msg.error" class="result-icon fail"><CircleCloseFilled /></el-icon>
+                <el-icon v-else class="result-icon"><DataLine /></el-icon>
+                <span class="card-title">{{ msg.error ? '查询失败' : '查询结果' }}</span>
+                <template v-if="msg.error">
+                  <span class="card-sep">·</span>
+                  <span class="card-meta fail-brief" :title="msg.error">{{ truncate(msg.error, 48) }}</span>
+                </template>
+                <template v-else>
+                  <span class="card-sep">·</span>
+                  <span class="card-meta">{{ msg.rowCount ?? 0 }} 行</span>
+                  <template v-if="msg.elapsedMs != null">
+                    <span class="card-sep">·</span>
+                    <span class="card-meta">{{ formatDuration(msg.elapsedMs) }}</span>
+                  </template>
+                  <template v-if="msg.truncated">
+                    <span class="card-sep">·</span>
+                    <span class="card-meta trunc">已截断</span>
+                  </template>
+                </template>
               </div>
-              <el-table
-                :data="pagedRows(msg)"
-                size="small"
-                class="result-table"
-                max-height="280"
-                style="width: 100%"
+
+              <div v-if="msg.error" class="err">{{ msg.error }}</div>
+
+              <div v-if="msg.sql" class="sql-block" :class="{ 'sql-fail': !!msg.error }">
+                <div class="sql-head">
+                  <span class="sql-title">{{ msg.scriptMode ? 'SQL 脚本' : 'SQL' }}</span>
+                  <div class="btns">
+                    <el-tooltip content="复制" placement="top">
+                      <el-button text :icon="CopyDocument" @click="copySql(msg.sql)" />
+                    </el-tooltip>
+                    <el-tooltip content="在编辑器中打开" placement="top">
+                      <el-button text :icon="EditPen" @click="openInEditor(msg.sql)" />
+                    </el-tooltip>
+                    <el-tooltip content="保存到脚本库" placement="top">
+                      <el-button text :icon="FolderAdd" @click="openSaveScript(msg.sql)" />
+                    </el-tooltip>
+                    <span v-if="!msg.error" class="page-size-label">每页</span>
+                    <el-radio-group
+                      v-if="!msg.error"
+                      v-model="resultPageSize"
+                      size="small"
+                      class="page-size-switch"
+                    >
+                      <el-radio-button :value="10">10</el-radio-button>
+                      <el-radio-button :value="20">20</el-radio-button>
+                      <el-radio-button :value="50">50</el-radio-button>
+                    </el-radio-group>
+                  </div>
+                </div>
+                <div class="sql-code">
+                  <span class="sql-corner">SQL</span>
+                  <div
+                    v-for="(line, li) in highlightedSqlLines(msg.sql)"
+                    :key="li"
+                    class="sql-line"
+                  >
+                    <span class="ln">{{ li + 1 }}</span>
+                    <code v-html="line"></code>
+                  </div>
+                </div>
+              </div>
+              <el-collapse
+                v-if="!msg.error && msg.scriptMode && msg.scriptSteps?.length"
+                class="script-steps"
               >
-                <el-table-column
-                  v-for="col in msg.columns"
-                  :key="col"
-                  :prop="col"
-                  :label="col"
-                  min-width="100"
-                  show-overflow-tooltip
-                  :align="isNumericColumn(col, msg.rows) ? 'right' : 'left'"
+                <el-collapse-item title="中间步骤" name="steps">
+                  <div
+                    v-for="(s, si) in msg.scriptSteps"
+                    :key="si"
+                    class="script-step-row"
+                  >
+                    <span class="idx">#{{ (s.index ?? si) + 1 }}</span>
+                    <span class="meta">
+                      {{ s.isFinalSelect ? '最终 SELECT' : '步骤' }}
+                      · {{ s.rowCount ?? 0 }} 行
+                      · {{ s.elapsedMs ?? 0 }}ms
+                      <span v-if="s.error" class="step-err"> · {{ s.error }}</span>
+                    </span>
+                    <pre class="step-sql">{{ s.sql }}</pre>
+                  </div>
+                </el-collapse-item>
+              </el-collapse>
+              <div v-if="!msg.error && msg.columns?.length" class="table-block">
+                <el-table
+                  :data="pagedRows(msg)"
+                  size="small"
+                  class="result-table"
+                  max-height="280"
+                  style="width: 100%"
+                >
+                  <el-table-column
+                    v-for="col in msg.columns"
+                    :key="col"
+                    :prop="col"
+                    :label="col"
+                    min-width="100"
+                    show-overflow-tooltip
+                    :align="isNumericColumn(col, msg.rows) ? 'right' : 'left'"
+                  />
+                </el-table>
+                <el-pagination
+                  v-if="(msg.rows?.length || 0) > resultPageSize"
+                  class="result-pager"
+                  small
+                  background
+                  layout="total, prev, pager, next"
+                  :page-size="resultPageSize"
+                  :current-page="msg.page || 1"
+                  :total="msg.rows?.length || 0"
+                  @current-change="(p) => onResultPageChange(msg, p)"
                 />
-              </el-table>
-              <el-pagination
-                v-if="(msg.rows?.length || 0) > resultPageSize"
-                class="result-pager"
-                small
-                background
-                layout="total, prev, pager, next"
-                :page-size="resultPageSize"
-                :current-page="msg.page || 1"
-                :total="msg.rows?.length || 0"
-                @current-change="(p) => onResultPageChange(msg, p)"
-              />
-            </div>
-          </section>
+              </div>
+              <div
+                v-if="canShowFeedback(msg)"
+                class="result-feedback"
+              >
+                <span class="feedback-label">这个结果对你有帮助吗？</span>
+                <button
+                  type="button"
+                  class="feedback-btn"
+                  :class="{ active: msg.feedback === 'USEFUL' }"
+                  :disabled="!!msg.feedback || feedbackBusy === idx"
+                  @click="onResultFeedback(msg, 'USEFUL')"
+                >👍 有用</button>
+                <button
+                  type="button"
+                  class="feedback-btn"
+                  :class="{ active: msg.feedback === 'USELESS' }"
+                  :disabled="!!msg.feedback || feedbackBusy === idx"
+                  @click="onResultFeedback(msg, 'USELESS')"
+                >👎 没用</button>
+              </div>
+            </section>
+          </div>
         </div>
       </div>
     </div>
@@ -315,7 +343,7 @@
 <script setup>
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Coin, CopyDocument, EditPen, FolderAdd } from '@element-plus/icons-vue'
+import { CircleCloseFilled, Coin, CopyDocument, DataLine, EditPen, FolderAdd } from '@element-plus/icons-vue'
 import { listInstanceDatabases } from '../../api/datasource'
 import { submitRelationFeedback } from '../../api/relation'
 import { getSettings } from '../../api/settings'
@@ -466,6 +494,14 @@ function formatDuration(ms) {
   return `${(n / 1000).toFixed(1)}s`
 }
 
+function hasReasonSection(msg, idx) {
+  return !!(msg?.phases?.length || showReasoningThinking(msg, idx))
+}
+
+function hasResultSection(msg) {
+  return !!(msg?.error || msg?.sql || msg?.columns?.length)
+}
+
 /** 有 SQL 且执行成功（有结果列、无错误）才显示反馈 */
 function canShowFeedback(msg) {
   if (!msg || msg.role !== 'assistant' || msg.pending) return false
@@ -496,13 +532,6 @@ async function onResultFeedback(msg, feedback) {
   } finally {
     feedbackBusy.value = -1
   }
-}
-
-function elapsedBadgeClass(ms) {
-  const n = Number(ms) || 0
-  if (n < 1000) return 'fast'
-  if (n < 5000) return 'mid'
-  return 'slow'
 }
 
 function phaseMark(p) {
@@ -1486,36 +1515,66 @@ watch(input, () => nextTick(() => resizeComposer()))
   color: var(--sk-on-primary);
   white-space: pre-wrap;
 }
-.ai-bubble {
-  background: var(--sk-bg-elevated);
-  border: 1px solid var(--sk-border);
-  color: var(--sk-text-primary);
+.ai-stack {
   width: 100%;
   max-width: 920px;
-  padding: 0;
-  overflow: hidden;
+  color: var(--sk-text-primary);
 }
 
-/* ---- 分区：推理 / 结果 ---- */
-.section {
+/* ---- 整体卡片：推理 + 结果 ---- */
+.ai-card {
+  background: var(--sk-bg-elevated);
+  border: 1px solid var(--sk-border, #e2e8f0);
+  border-radius: 8px;
+  padding: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.ai-card-block {
   padding: 16px;
+  box-sizing: border-box;
 }
-.section-reason {
-  padding-bottom: 8px;
+.ai-card-divider {
+  height: 0;
+  border: none;
+  border-top: 1px solid var(--sk-border, #e2e8f0);
+  margin: 0;
 }
-.section-result.has-reason-above {
-  padding-top: 0;
+.card-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
+  color: var(--sk-text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.card-title {
+  color: var(--sk-text-primary);
+  font-weight: 600;
+}
+.card-sep {
+  color: var(--sk-border-strong, var(--sk-border));
+}
+.card-meta {
+  color: var(--sk-text-secondary);
+}
+.card-meta.trunc {
+  color: var(--sk-warning-text, var(--sk-warning));
+}
+.card-meta.fail-brief {
+  color: var(--sk-danger);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .reason-head {
   width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 2px;
+  padding: 0;
   border: none;
   background: transparent;
-  color: var(--sk-text-secondary, var(--sk-text-secondary));
-  font-size: 13px;
   cursor: pointer;
   text-align: left;
 }
@@ -1533,17 +1592,24 @@ watch(input, () => nextTick(() => resizeComposer()))
 .reason-mark.running {
   color: var(--sk-primary);
 }
-.reason-title {
-  color: var(--sk-text-primary, var(--sk-text-primary));
-  font-weight: 600;
-}
-.reason-sep {
-  color: var(--sk-border-strong);
-}
 .reason-toggle {
   margin-left: auto;
   font-size: 12px;
-  color: var(--sk-text-tertiary, var(--sk-text-tertiary));
+  color: var(--sk-text-tertiary, var(--sk-text-secondary));
+}
+.result-head {
+  margin-bottom: 12px;
+}
+.result-head.fail .card-title {
+  color: var(--sk-danger);
+}
+.result-icon {
+  font-size: 16px;
+  color: var(--sk-primary);
+  flex-shrink: 0;
+}
+.result-icon.fail {
+  color: var(--sk-danger);
 }
 .mini-spin {
   display: inline-block;
@@ -1676,13 +1742,6 @@ watch(input, () => nextTick(() => resizeComposer()))
   text-align: right;
 }
 
-.summary {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--sk-text-primary);
-  margin: 16px 0 0;
-  line-height: 1.6;
-}
 .thinking-hint {
   display: flex;
   align-items: center;
@@ -1738,10 +1797,19 @@ watch(input, () => nextTick(() => resizeComposer()))
   margin-bottom: 12px;
 }
 .sql-block {
-  margin-top: 16px;
   border: 1px solid var(--sk-border);
   border-radius: 6px;
   overflow: hidden;
+}
+.sql-block.sql-fail {
+  border-color: var(--sk-danger);
+}
+.sql-block + .script-steps,
+.sql-block + .table-block,
+.sql-block + .result-feedback,
+.script-steps + .table-block,
+.table-block + .result-feedback {
+  margin-top: 12px;
 }
 .sql-head {
   display: flex;
@@ -1820,7 +1888,6 @@ watch(input, () => nextTick(() => resizeComposer()))
   color: #6a9955;
 }
 .script-steps {
-  margin-top: 12px;
   border: 1px solid var(--sk-border);
   border-radius: 8px;
   overflow: hidden;
@@ -1892,42 +1959,7 @@ watch(input, () => nextTick(() => resizeComposer()))
   cursor: not-allowed;
 }
 .table-block {
-  margin-top: 16px;
-}
-.table-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.badge {
-  display: inline-flex;
-  align-items: center;
-  height: 22px;
-  padding: 0 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  line-height: 22px;
-}
-.badge-rows {
-  color: var(--sk-success-text);
-  background: var(--sk-success-bg);
-}
-.badge-trunc {
-  color: var(--sk-warning-text);
-  background: var(--sk-warning-bg);
-}
-.badge-time.fast {
-  color: var(--sk-success-text);
-  background: var(--sk-success-bg);
-}
-.badge-time.mid {
-  color: var(--sk-primary-strong);
-  background: var(--sk-active-bg);
-}
-.badge-time.slow {
-  color: var(--sk-slow-text);
-  background: var(--sk-slow-bg);
+  margin-top: 0;
 }
 .result-table {
   --el-table-border-color: transparent;
@@ -1965,7 +1997,7 @@ watch(input, () => nextTick(() => resizeComposer()))
   display: flex;
   align-items: center;
   gap: 2px;
-  padding: 16px 8px;
+  padding: 16px;
   font-size: 13px;
   color: var(--sk-text-tertiary);
   user-select: none;

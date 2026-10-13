@@ -82,7 +82,7 @@ export const useTabsStore = defineStore('tabs', {
         { title: '模型配置' }
       )
     },
-    openRelationManage({ datasourceId } = {}) {
+    openRelationManage({ datasourceId, dbName } = {}) {
       const existing = this.tabs.find((t) => t.type === 'relationManage')
       if (existing) {
         this.activeId = existing.id
@@ -90,6 +90,7 @@ export const useTabsStore = defineStore('tabs', {
           props: {
             ...existing.props,
             datasourceId: datasourceId || existing.props?.datasourceId || null,
+            dbName: dbName || existing.props?.dbName || null,
             reloadToken: Date.now()
           }
         })
@@ -97,7 +98,11 @@ export const useTabsStore = defineStore('tabs', {
       }
       return this.addTab(
         'relationManage',
-        { datasourceId: datasourceId || null, reloadToken: Date.now() },
+        {
+          datasourceId: datasourceId || null,
+          dbName: dbName || null,
+          reloadToken: Date.now()
+        },
         { title: '表关系管理' }
       )
     },

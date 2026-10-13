@@ -41,6 +41,7 @@ public class RelationController {
     @GetMapping("/list")
     public Map<String, Object> list(
             @RequestParam("datasourceId") String datasourceId,
+            @RequestParam(value = "database", required = false) String database,
             @RequestParam(value = "status", required = false) String status,
             @RequestParam(value = "keyword", required = false) String keyword,
             @RequestParam(value = "page", defaultValue = "1") int page,
@@ -48,17 +49,34 @@ public class RelationController {
         if (!StringUtils.hasText(datasourceId)) {
             throw new IllegalArgumentException("datasourceId 不能为空");
         }
+        String db = StringUtils.hasText(database) ? database.trim() : null;
         String st = StringUtils.hasText(status) ? status.trim() : null;
         String kw = StringUtils.hasText(keyword) ? keyword.trim() : null;
-        List<RelationUsage> rows = relationUsageService.list(datasourceId, st, kw, page, size);
+        List<RelationUsage> rows = relationUsageService.list(datasourceId, db, st, kw, page, size);
         List<Map<String, Object>> items = new ArrayList<>();
         for (RelationUsage row : rows) {
             items.add(toItem(row));
         }
         Map<String, Object> body = new LinkedHashMap<>();
-        body.put("total", relationUsageService.count(datasourceId, st, kw));
+        body.put("total", relationUsageService.count(datasourceId, db, st, kw));
         body.put("items", items);
         return body;
+    }
+
+    /**
+     * ER 图：节点 + 边。database 可选；status 默认不过滤（由前端传 CONFIRMED 等）。
+     */
+    @GetMapping("/graph")
+    public Map<String, Object> graph(
+            @RequestParam("datasourceId") String datasourceId,
+            @RequestParam(value = "database", required = false) String database,
+            @RequestParam(value = "status", required = false) String status) {
+        if (!StringUtils.hasText(datasourceId)) {
+            throw new IllegalArgumentException("datasourceId 不能为空");
+        }
+        String db = StringUtils.hasText(database) ? database.trim() : null;
+        String st = StringUtils.hasText(status) ? status.trim() : null;
+        return relationUsageService.graph(datasourceId, db, st);
     }
 
     @PutMapping("/{id}/confirm")

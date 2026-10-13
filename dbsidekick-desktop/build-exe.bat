@@ -54,19 +54,33 @@ if errorlevel 1 goto fail
 
 echo [4/4] jpackage app-image...
 cd dbsidekick-desktop
-if exist dist rmdir /s /q dist
+
+REM 正在运行的 DBSidekick / jcef 会锁住 dist\DBSidekick，导致 rmdir / jpackage 失败
+echo 结束可能占用 dist 的进程...
+taskkill /F /IM DBSidekick.exe >nul 2>&1
+taskkill /F /IM jcef_helper.exe >nul 2>&1
+ping -n 3 127.0.0.1 >nul
+
+if exist dist (
+  echo 删除旧 dist...
+  rmdir /s /q dist
+  if exist dist (
+    echo [ERROR] 无法删除 dist，请先关掉 DBSidekick.exe 后重试
+    goto fail
+  )
+)
 mkdir dist
 if exist target\jpackage-input rmdir /s /q target\jpackage-input
 mkdir target\jpackage-input
-copy /Y target\dbsidekick-desktop-0.0.1-SNAPSHOT.jar target\jpackage-input\
+copy /Y target\dbsidekick-desktop-0.1.0.jar target\jpackage-input\
 
 REM Spring Boot 胖包入口必须是 JarLauncher。使用完整 JDK，裁剪运行时创建 JCEF 浏览器时会退出。
 call jpackage ^
   --type app-image ^
   --name DBSidekick ^
-  --app-version 0.0.1 ^
+  --app-version 0.1.0 ^
   --input target\jpackage-input ^
-  --main-jar dbsidekick-desktop-0.0.1-SNAPSHOT.jar ^
+  --main-jar dbsidekick-desktop-0.1.0.jar ^
   --main-class org.springframework.boot.loader.launch.JarLauncher ^
   --dest dist ^
   --runtime-image "%JAVA_HOME%" ^
@@ -76,13 +90,14 @@ call jpackage ^
 
 if errorlevel 1 (
   echo jpackage failed. If --type exe is needed later, install WiX 3.x and change type.
+  echo 常见原因：dist\DBSidekick 仍被占用，或未先结束 DBSidekick.exe。
   goto fail
 )
 
 echo.
 echo Build complete.
 echo Run: dbsidekick-desktop\dist\DBSidekick\DBSidekick.exe
-echo Dev smoke: java -Djava.awt.headless=false -jar dbsidekick-desktop\target\dbsidekick-desktop-0.0.1-SNAPSHOT.jar
+echo Dev smoke: java -Djava.awt.headless=false -jar dbsidekick-desktop\target\dbsidekick-desktop-0.1.0.jar
 endlocal
 exit /b 0
 

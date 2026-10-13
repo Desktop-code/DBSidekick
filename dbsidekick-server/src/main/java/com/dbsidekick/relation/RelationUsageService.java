@@ -228,6 +228,11 @@ public class RelationUsageService {
     }
 
     public List<RelationUsage> list(String datasourceId, String status, String keyword, int page, int size) {
+        return list(datasourceId, null, status, keyword, page, size);
+    }
+
+    public List<RelationUsage> list(String datasourceId, String database, String status, String keyword,
+                                    int page, int size) {
         if (!StringUtils.hasText(datasourceId)) {
             return List.of();
         }
@@ -235,23 +240,13 @@ public class RelationUsageService {
         int sz = Math.min(Math.max(size, 1), 200);
         int offset = (p - 1) * sz;
         String ds = datasourceId.trim();
-        boolean filterStatus = StringUtils.hasText(status);
-        boolean filterKeyword = StringUtils.hasText(keyword);
         StringBuilder sql = new StringBuilder("""
                 SELECT id, datasource_id, source_table, source_column, target_table, target_column,
                        hit_count, confidence, status, sources, first_seen_at, last_used_at, last_use_rows
                 FROM relation_usage
                 WHERE datasource_id = ?
                 """);
-        if (filterStatus) {
-            sql.append(" AND status = ?");
-        }
-        if (filterKeyword) {
-            sql.append("""
-                     AND (source_table LIKE ? OR source_column LIKE ?
-                       OR target_table LIKE ? OR target_column LIKE ?)
-                    """);
-        }
+        appendListFilters(sql, database, status, keyword);
         sql.append("""
                  ORDER BY confidence DESC,
                           CASE WHEN last_used_at IS NULL THEN 1 ELSE 0 END,
@@ -261,18 +256,7 @@ public class RelationUsageService {
         List<RelationUsage> list = new ArrayList<>();
         try (Connection conn = sqliteInitializer.open();
              PreparedStatement ps = conn.prepareStatement(sql.toString())) {
-            int i = 1;
-            ps.setString(i++, ds);
-            if (filterStatus) {
-                ps.setString(i++, status.trim().toUpperCase(Locale.ROOT));
-            }
-            if (filterKeyword) {
-                String like = "%" + keyword.trim() + "%";
-                ps.setString(i++, like);
-                ps.setString(i++, like);
-                ps.setString(i++, like);
-                ps.setString(i++, like);
-            }
+            int i = bindListFilters(ps, 1, ds, database, status, keyword);
             ps.setInt(i++, sz);
             ps.setInt(i, offset);
             try (ResultSet rs = ps.executeQuery()) {
@@ -287,36 +271,19 @@ public class RelationUsageService {
     }
 
     public int count(String datasourceId, String status, String keyword) {
+        return count(datasourceId, null, status, keyword);
+    }
+
+    public int count(String datasourceId, String database, String status, String keyword) {
         if (!StringUtils.hasText(datasourceId)) {
             return 0;
         }
         String ds = datasourceId.trim();
-        boolean filterStatus = StringUtils.hasText(status);
-        boolean filterKeyword = StringUtils.hasText(keyword);
         StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM relation_usage WHERE datasource_id = ?");
-        if (filterStatus) {
-            sql.append(" AND status = ?");
-        }
-        if (filterKeyword) {
-            sql.append("""
-                     AND (source_table LIKE ? OR source_column LIKE ?
-                       OR target_table LIKE ? OR target_column LIKE ?)
-                    """);
-        }
+        appendListFilters(sql, database, status, keyword);
         try (Connection conn = sqliteInitializer.open();
              PreparedStatement ps = conn.prepareStatement(sql.toString())) {
-            int i = 1;
-            ps.setString(i++, ds);
-            if (filterStatus) {
-                ps.setString(i++, status.trim().toUpperCase(Locale.ROOT));
-            }
-            if (filterKeyword) {
-                String like = "%" + keyword.trim() + "%";
-                ps.setString(i++, like);
-                ps.setString(i++, like);
-                ps.setString(i++, like);
-                ps.setString(i, like);
-            }
+            bindListFilters(ps, 1, ds, database, status, keyword);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
                     return rs.getInt(1);
@@ -326,6 +293,289 @@ public class RelationUsageService {
             log.warn("[Sidekick][relation] count failed: {}", ex.getMessage());
         }
         return 0;
+    }
+
+    /**
+     * ER 图数据：按库过滤关系（源表与目标表都必须属于该库）；节点超过 50 时只保留关联度 Top50。
+     * <p>SQL 过滤后再用 schema_table 表白名单做返回前二次过滤，避免漏网。</p>
+     */
+    public Map<String, Object> graph(String datasourceId, String database, String status) {
+        if (!StringUtils.hasText(datasourceId)) {
+            throw new IllegalArgumentException("datasourceId 不能为空");
+        }
+        String ds = datasourceId.trim();
+        String db = StringUtils.hasText(database) ? database.trim() : null;
+        String st = StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : null;
+
+        List<RelationUsage> raw = listAllForGraph(ds, null, st);
+        int edgesBefore = raw.size();
+        Set<String> tablesBefore = new LinkedHashSet<>();
+        for (RelationUsage e : raw) {
+            if (StringUtils.hasText(e.getSourceTable())) {
+                tablesBefore.add(e.getSourceTable().trim());
+            }
+            if (StringUtils.hasText(e.getTargetTable())) {
+                tablesBefore.add(e.getTargetTable().trim());
+            }
+        }
+        int nodesBefore = tablesBefore.size();
+
+        Set<String> allowedTables = null;
+        if (db != null) {
+            allowedTables = loadTableNamesInDatabase(ds, db);
+            log.info("[Sidekick][relation][graph] ds={} db={} schema_table count={}", ds, db, allowedTables.size());
+        }
+
+        List<RelationUsage> filtered = new ArrayList<>();
+        for (RelationUsage e : raw) {
+            String src = e.getSourceTable() == null ? "" : e.getSourceTable().trim();
+            String tgt = e.getTargetTable() == null ? "" : e.getTargetTable().trim();
+            if (!StringUtils.hasText(src) || !StringUtils.hasText(tgt)) {
+                continue;
+            }
+            if (allowedTables != null && (!allowedTables.contains(src) || !allowedTables.contains(tgt))) {
+                continue;
+            }
+            filtered.add(e);
+        }
+        int edgesAfter = filtered.size();
+
+        Map<String, Integer> relationCount = new LinkedHashMap<>();
+        for (RelationUsage e : filtered) {
+            bump(relationCount, e.getSourceTable());
+            bump(relationCount, e.getTargetTable());
+        }
+
+        List<Map.Entry<String, Integer>> ranked = new ArrayList<>(relationCount.entrySet());
+        ranked.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+        int totalNodes = ranked.size();
+        boolean truncated = totalNodes > 50;
+        Set<String> keepTables = new LinkedHashSet<>();
+        int limit = truncated ? 50 : totalNodes;
+        for (int i = 0; i < limit; i++) {
+            keepTables.add(ranked.get(i).getKey());
+        }
+
+        List<RelationUsage> edges = new ArrayList<>();
+        for (RelationUsage e : filtered) {
+            if (keepTables.contains(e.getSourceTable()) && keepTables.contains(e.getTargetTable())) {
+                edges.add(e);
+            }
+        }
+
+        Map<String, TableMeta> meta = loadTableMeta(ds, db, keepTables);
+
+        List<Map<String, Object>> nodes = new ArrayList<>();
+        for (String table : keepTables) {
+            // 二次兜底：有库名时绝不返回白名单外的节点
+            if (allowedTables != null && !allowedTables.contains(table)) {
+                continue;
+            }
+            TableMeta tm = meta.getOrDefault(table, TableMeta.empty(table));
+            Map<String, Object> node = new LinkedHashMap<>();
+            node.put("id", table);
+            node.put("name", table);
+            node.put("comment", tm.comment());
+            node.put("domain", domainOf(table));
+            node.put("dbName", db);
+            node.put("relationCount", relationCount.getOrDefault(table, 0));
+            node.put("columnCount", tm.columnCount());
+            nodes.add(node);
+        }
+
+        List<Map<String, Object>> edgeItems = new ArrayList<>();
+        for (RelationUsage e : edges) {
+            if (allowedTables != null
+                    && (!allowedTables.contains(e.getSourceTable()) || !allowedTables.contains(e.getTargetTable()))) {
+                continue;
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", e.getId());
+            m.put("source", e.getSourceTable());
+            m.put("target", e.getTargetTable());
+            m.put("sourceColumn", e.getSourceColumn());
+            m.put("targetColumn", e.getTargetColumn());
+            m.put("status", e.getStatus());
+            m.put("confidence", e.getConfidence());
+            m.put("sources", e.getSources());
+            edgeItems.add(m);
+        }
+
+        log.info("[Sidekick][relation][graph] ds={} db={} status={} nodesBefore={} nodesAfter={} edgesBefore={} edgesAfter={} returnedNodes={} returnedEdges={}",
+                ds, db == null ? "(all)" : db, st == null ? "(all)" : st,
+                nodesBefore, totalNodes, edgesBefore, edgesAfter, nodes.size(), edgeItems.size());
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("database", db);
+        body.put("nodes", nodes);
+        body.put("edges", edgeItems);
+        body.put("totalEdges", edgesAfter);
+        body.put("totalNodes", totalNodes);
+        body.put("truncated", truncated);
+        body.put("hiddenCount", truncated ? Math.max(0, totalNodes - keepTables.size()) : 0);
+        return body;
+    }
+
+    /** 指定数据源 + 库下的全部表名（来自 schema_table）。 */
+    private Set<String> loadTableNamesInDatabase(String ds, String database) {
+        Set<String> out = new LinkedHashSet<>();
+        String sql = """
+                SELECT table_name FROM schema_table
+                WHERE datasource_id = ? AND db_name = ?
+                """;
+        try (Connection conn = sqliteInitializer.open();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, ds);
+            ps.setString(2, database);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String name = rs.getString(1);
+                    if (StringUtils.hasText(name)) {
+                        out.add(name.trim());
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            throw new IllegalStateException("读取 schema_table 失败: " + ex.getMessage(), ex);
+        }
+        return out;
+    }
+
+    private List<RelationUsage> listAllForGraph(String ds, String database, String status) {
+        StringBuilder sql = new StringBuilder("""
+                SELECT id, datasource_id, source_table, source_column, target_table, target_column,
+                       hit_count, confidence, status, sources, first_seen_at, last_used_at, last_use_rows
+                FROM relation_usage
+                WHERE datasource_id = ?
+                """);
+        appendListFilters(sql, database, status, null);
+        sql.append(" ORDER BY confidence DESC, source_table, source_column");
+        List<RelationUsage> list = new ArrayList<>();
+        try (Connection conn = sqliteInitializer.open();
+             PreparedStatement ps = conn.prepareStatement(sql.toString())) {
+            bindListFilters(ps, 1, ds, database, status, null);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    list.add(mapRow(rs));
+                }
+            }
+        } catch (Exception ex) {
+            throw new IllegalStateException("查询关系图失败: " + ex.getMessage(), ex);
+        }
+        return list;
+    }
+
+    private static void appendListFilters(StringBuilder sql, String database, String status, String keyword) {
+        if (StringUtils.hasText(database)) {
+            // 两端都必须属于所选库；OR 会导致跨库边把外库表节点带进图
+            sql.append("""
+                     AND source_table IN (
+                       SELECT table_name FROM schema_table
+                       WHERE datasource_id = ? AND db_name = ?
+                     )
+                     AND target_table IN (
+                       SELECT table_name FROM schema_table
+                       WHERE datasource_id = ? AND db_name = ?
+                     )
+                    """);
+        }
+        if (StringUtils.hasText(status)) {
+            sql.append(" AND status = ?");
+        }
+        if (StringUtils.hasText(keyword)) {
+            sql.append("""
+                     AND (source_table LIKE ? OR source_column LIKE ?
+                       OR target_table LIKE ? OR target_column LIKE ?)
+                    """);
+        }
+    }
+
+    private static int bindListFilters(PreparedStatement ps, int start, String ds, String database,
+                                       String status, String keyword) throws Exception {
+        int i = start;
+        ps.setString(i++, ds);
+        if (StringUtils.hasText(database)) {
+            String db = database.trim();
+            ps.setString(i++, ds);
+            ps.setString(i++, db);
+            ps.setString(i++, ds);
+            ps.setString(i++, db);
+        }
+        if (StringUtils.hasText(status)) {
+            ps.setString(i++, status.trim().toUpperCase(Locale.ROOT));
+        }
+        if (StringUtils.hasText(keyword)) {
+            String like = "%" + keyword.trim() + "%";
+            ps.setString(i++, like);
+            ps.setString(i++, like);
+            ps.setString(i++, like);
+            ps.setString(i++, like);
+        }
+        return i;
+    }
+
+    private static void bump(Map<String, Integer> map, String table) {
+        if (!StringUtils.hasText(table)) {
+            return;
+        }
+        String key = table.trim();
+        map.put(key, map.getOrDefault(key, 0) + 1);
+    }
+
+    private static String domainOf(String table) {
+        if (!StringUtils.hasText(table)) {
+            return "other";
+        }
+        int idx = table.indexOf('_');
+        if (idx <= 0) {
+            return table.toLowerCase(Locale.ROOT);
+        }
+        return table.substring(0, idx).toLowerCase(Locale.ROOT);
+    }
+
+    private Map<String, TableMeta> loadTableMeta(String ds, String database, Collection<String> tables) {
+        Map<String, TableMeta> out = new LinkedHashMap<>();
+        if (tables == null || tables.isEmpty()) {
+            return out;
+        }
+        StringBuilder sql = new StringBuilder("""
+                SELECT t.table_name,
+                       COALESCE(NULLIF(TRIM(t.table_comment), ''), NULLIF(TRIM(t.table_purpose), ''), '') AS comment,
+                       (SELECT COUNT(*) FROM schema_column c WHERE c.table_id = t.id) AS col_count
+                FROM schema_table t
+                WHERE t.datasource_id = ?
+                """);
+        if (StringUtils.hasText(database)) {
+            sql.append(" AND t.db_name = ?");
+        }
+        try (Connection conn = sqliteInitializer.open();
+             PreparedStatement ps = conn.prepareStatement(sql.toString())) {
+            ps.setString(1, ds);
+            if (StringUtils.hasText(database)) {
+                ps.setString(2, database.trim());
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String name = rs.getString("table_name");
+                    if (!tables.contains(name)) {
+                        continue;
+                    }
+                    out.put(name, new TableMeta(
+                            name,
+                            rs.getString("comment") == null ? "" : rs.getString("comment"),
+                            rs.getInt("col_count")));
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("[Sidekick][relation] load table meta failed: {}", ex.getMessage());
+        }
+        return out;
+    }
+
+    private record TableMeta(String name, String comment, int columnCount) {
+        static TableMeta empty(String name) {
+            return new TableMeta(name, "", 0);
+        }
     }
 
     /**
