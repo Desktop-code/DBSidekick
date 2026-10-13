@@ -27,3 +27,7 @@ export function getRelationConfig() {
 export function updateRelationConfig(body) {
   return request.post('/relation/config/update', body)
 }
+
+export function submitRelationFeedback(body) {
+  return request.post('/relation/feedback', body)
+}

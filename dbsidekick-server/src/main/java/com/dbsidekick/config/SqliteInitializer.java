@@ -21,7 +21,7 @@ import org.springframework.stereotype.Component;
 public class SqliteInitializer {
 
     private static final Logger log = LoggerFactory.getLogger(SqliteInitializer.class);
-    private static final int CURRENT_SCHEMA_VERSION = 2;
+    private static final int CURRENT_SCHEMA_VERSION = 3;
 
     public static final Path DATA_DIR = Paths.get(System.getProperty("user.home"), ".dbsidekick");
     public static final Path DB_PATH = DATA_DIR.resolve("dbsidekick.db");
@@ -170,11 +170,19 @@ public class SqliteInitializer {
             applyV2(conn);
             setInt(conn, "schema_version", 2);
             log.info("[Sidekick] migrated SQLite to v2");
-        } else if (current > CURRENT_SCHEMA_VERSION) {
+            current = 2;
+        }
+        if (current < 3) {
+            applyV3(conn);
+            setInt(conn, "schema_version", 3);
+            log.info("[Sidekick] migrated SQLite to v3");
+            current = 3;
+        }
+        if (current > CURRENT_SCHEMA_VERSION) {
             log.warn("[Sidekick] SQLite schema_version={} is newer than this build ({})",
                     current, CURRENT_SCHEMA_VERSION);
         } else {
-            log.info("[Sidekick] SQLite schema_version={}, skip migration", current);
+            log.info("[Sidekick] SQLite schema_version={}", current);
         }
     }
 
@@ -338,16 +346,31 @@ public class SqliteInitializer {
         exec(conn, "CREATE INDEX IF NOT EXISTS idx_relation_log_session ON relation_usage_log(session_id, question_hash)");
         exec(conn, """
                 INSERT OR IGNORE INTO relation_config(key, value) VALUES
-                  ('confidence-threshold', '3'),
+                  ('confidence-threshold', '6'),
                   ('score.sql-success', '1'),
                   ('score.row-count-positive', '1'),
+                  ('score.user-liked', '3'),
+                  ('score.user-disliked', '-5'),
                   ('score.saved-to-script', '5'),
                   ('score.user-confirmed', '10'),
                   ('score.user-rejected', '-100'),
+                  ('max-consecutive-dislikes', '3'),
+                  ('require-strong-signal', 'true'),
                   ('excluded-column-names', 'id,uuid,guid,code,no,num,sort,order,seq,version'),
                   ('temp-table-prefixes', 'tmp_,temp_,_tmp_,_temp_'),
                   ('adjacency-whitelist-limit', '8'),
                   ('inferred-threshold-multiplier', '2')
+                """);
+    }
+
+    private void applyV3(Connection conn) throws SQLException {
+        tryAlter(conn, "ALTER TABLE chat_message ADD COLUMN user_feedback TEXT");
+        exec(conn, """
+                INSERT OR IGNORE INTO relation_config(key, value) VALUES
+                  ('score.user-liked', '3'),
+                  ('score.user-disliked', '-5'),
+                  ('max-consecutive-dislikes', '3'),
+                  ('require-strong-signal', 'true')
                 """);
     }
 

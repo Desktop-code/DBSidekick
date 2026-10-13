@@ -37,9 +37,16 @@ public class SseEvent {
     }
 
     public static SseEvent done(String sessionId) {
+        return done(sessionId, null);
+    }
+
+    public static SseEvent done(String sessionId, String messageId) {
         java.util.Map<String, Object> data = new java.util.LinkedHashMap<>();
         if (sessionId != null && !sessionId.isBlank()) {
             data.put("sessionId", sessionId);
+        }
+        if (messageId != null && !messageId.isBlank()) {
+            data.put("messageId", messageId);
         }
         return new SseEvent("done", data);
     }

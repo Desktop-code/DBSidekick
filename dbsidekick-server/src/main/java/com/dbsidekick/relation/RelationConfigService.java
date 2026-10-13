@@ -32,9 +32,13 @@ public class RelationConfigService {
     public static final String KEY_THRESHOLD = "confidence-threshold";
     public static final String KEY_SCORE_SQL_SUCCESS = "score.sql-success";
     public static final String KEY_SCORE_ROW_COUNT = "score.row-count-positive";
+    public static final String KEY_SCORE_LIKED = "score.user-liked";
+    public static final String KEY_SCORE_DISLIKED = "score.user-disliked";
     public static final String KEY_SCORE_SAVED = "score.saved-to-script";
     public static final String KEY_SCORE_CONFIRMED = "score.user-confirmed";
     public static final String KEY_SCORE_REJECTED = "score.user-rejected";
+    public static final String KEY_MAX_CONSECUTIVE_DISLIKES = "max-consecutive-dislikes";
+    public static final String KEY_REQUIRE_STRONG_SIGNAL = "require-strong-signal";
     public static final String KEY_EXCLUDED_COLUMNS = "excluded-column-names";
     public static final String KEY_TEMP_PREFIXES = "temp-table-prefixes";
     public static final String KEY_ADJACENCY_LIMIT = "adjacency-whitelist-limit";
@@ -44,9 +48,13 @@ public class RelationConfigService {
             KEY_THRESHOLD,
             KEY_SCORE_SQL_SUCCESS,
             KEY_SCORE_ROW_COUNT,
+            KEY_SCORE_LIKED,
+            KEY_SCORE_DISLIKED,
             KEY_SCORE_SAVED,
             KEY_SCORE_CONFIRMED,
             KEY_SCORE_REJECTED,
+            KEY_MAX_CONSECUTIVE_DISLIKES,
+            KEY_REQUIRE_STRONG_SIGNAL,
             KEY_EXCLUDED_COLUMNS,
             KEY_TEMP_PREFIXES,
             KEY_ADJACENCY_LIMIT,
@@ -56,12 +64,16 @@ public class RelationConfigService {
     private static final Map<String, String> CODE_DEFAULTS = new LinkedHashMap<>();
 
     static {
-        CODE_DEFAULTS.put(KEY_THRESHOLD, "3");
+        CODE_DEFAULTS.put(KEY_THRESHOLD, "6");
         CODE_DEFAULTS.put(KEY_SCORE_SQL_SUCCESS, "1");
         CODE_DEFAULTS.put(KEY_SCORE_ROW_COUNT, "1");
+        CODE_DEFAULTS.put(KEY_SCORE_LIKED, "3");
+        CODE_DEFAULTS.put(KEY_SCORE_DISLIKED, "-5");
         CODE_DEFAULTS.put(KEY_SCORE_SAVED, "5");
         CODE_DEFAULTS.put(KEY_SCORE_CONFIRMED, "10");
         CODE_DEFAULTS.put(KEY_SCORE_REJECTED, "-100");
+        CODE_DEFAULTS.put(KEY_MAX_CONSECUTIVE_DISLIKES, "3");
+        CODE_DEFAULTS.put(KEY_REQUIRE_STRONG_SIGNAL, "true");
         CODE_DEFAULTS.put(KEY_EXCLUDED_COLUMNS, "id,uuid,guid,code,no,num,sort,order,seq,version");
         CODE_DEFAULTS.put(KEY_TEMP_PREFIXES, "tmp_,temp_,_tmp_,_temp_");
         CODE_DEFAULTS.put(KEY_ADJACENCY_LIMIT, "8");
@@ -120,6 +132,18 @@ public class RelationConfigService {
         }
     }
 
+    public boolean getBoolean(String key, boolean defaultValue) {
+        try {
+            String raw = get(key);
+            if (!StringUtils.hasText(raw)) {
+                return defaultValue;
+            }
+            return "true".equalsIgnoreCase(raw.trim()) || "1".equals(raw.trim());
+        } catch (Exception ex) {
+            return defaultValue;
+        }
+    }
+
     public String getString(String key, String defaultValue) {
         try {
             String value = get(key);
@@ -151,6 +175,15 @@ public class RelationConfigService {
     public int confidenceThreshold() {
         int t = getInt(KEY_THRESHOLD);
         return t <= 0 ? Integer.parseInt(CODE_DEFAULTS.get(KEY_THRESHOLD)) : t;
+    }
+
+    public boolean requireStrongSignal() {
+        return getBoolean(KEY_REQUIRE_STRONG_SIGNAL, true);
+    }
+
+    public int maxConsecutiveDislikes() {
+        int n = getInt(KEY_MAX_CONSECUTIVE_DISLIKES, 3);
+        return n <= 0 ? 3 : n;
     }
 
     public Set<String> excludedColumnNames() {
@@ -198,6 +231,13 @@ public class RelationConfigService {
                     throw new IllegalArgumentException(key + " 必须是整数");
                 }
             }
+            if (KEY_REQUIRE_STRONG_SIGNAL.equals(key)) {
+                if (!"true".equalsIgnoreCase(value) && !"false".equalsIgnoreCase(value)
+                        && !"1".equals(value) && !"0".equals(value)) {
+                    throw new IllegalArgumentException(key + " 必须是 true/false");
+                }
+                value = "true".equalsIgnoreCase(value) || "1".equals(value) ? "true" : "false";
+            }
             try {
                 write(key, value);
             } catch (Exception ex) {
@@ -208,6 +248,9 @@ public class RelationConfigService {
 
     private static boolean isIntKey(String key) {
         return KEY_THRESHOLD.equals(key)
+                || KEY_ADJACENCY_LIMIT.equals(key)
+                || KEY_INFERRED_MULTIPLIER.equals(key)
+                || KEY_MAX_CONSECUTIVE_DISLIKES.equals(key)
                 || key.startsWith("score.");
     }
 
@@ -234,10 +277,18 @@ public class RelationConfigService {
                     ? null : String.valueOf(rel.getAdjacencyWhitelistLimit());
             case KEY_INFERRED_MULTIPLIER -> rel.getInferredThresholdMultiplier() == null
                     ? null : String.valueOf(rel.getInferredThresholdMultiplier());
+            case KEY_MAX_CONSECUTIVE_DISLIKES -> rel.getMaxConsecutiveDislikes() == null
+                    ? null : String.valueOf(rel.getMaxConsecutiveDislikes());
+            case KEY_REQUIRE_STRONG_SIGNAL -> rel.getRequireStrongSignal() == null
+                    ? null : String.valueOf(rel.getRequireStrongSignal());
             case KEY_SCORE_SQL_SUCCESS -> score == null || score.getSqlSuccess() == null
                     ? null : String.valueOf(score.getSqlSuccess());
             case KEY_SCORE_ROW_COUNT -> score == null || score.getRowCountPositive() == null
                     ? null : String.valueOf(score.getRowCountPositive());
+            case KEY_SCORE_LIKED -> score == null || score.getUserLiked() == null
+                    ? null : String.valueOf(score.getUserLiked());
+            case KEY_SCORE_DISLIKED -> score == null || score.getUserDisliked() == null
+                    ? null : String.valueOf(score.getUserDisliked());
             case KEY_SCORE_SAVED -> score == null || score.getSavedToScript() == null
                     ? null : String.valueOf(score.getSavedToScript());
             case KEY_SCORE_CONFIRMED -> score == null || score.getUserConfirmed() == null

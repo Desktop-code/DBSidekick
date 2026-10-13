@@ -378,7 +378,7 @@ onUnmounted(() => {
 .sql-item:hover {
   background: var(--sk-card);
   border-color: var(--sk-border);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 3px var(--sk-shadow);
 }
 .sql-item.active {
   background: var(--sk-primary-light);
@@ -450,8 +450,8 @@ onUnmounted(() => {
 .preview-sql {
   margin: 0;
   padding: 12px;
-  background: #1e1e2e;
-  color: #cdd6f4;
+  background: var(--sk-code-bg);
+  color: var(--sk-code-fg);
   border-radius: 6px;
   font-family: Consolas, Monaco, monospace;
   font-size: 12px;
@@ -473,22 +473,22 @@ onUnmounted(() => {
   margin: 0;
   padding: 4px 0;
   list-style: none;
-  background: #fff;
-  border: 1px solid #e4e7ed;
+  background: var(--sk-bg-elevated);
+  border: 1px solid var(--sk-border);
   border-radius: 6px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 6px 16px var(--sk-shadow-pop);
   z-index: 4001;
 }
 .script-ctx-menu li {
   padding: 8px 14px;
   font-size: 13px;
-  color: #303133;
+  color: var(--sk-text-primary);
   cursor: pointer;
 }
 .script-ctx-menu li:hover {
-  background: #f5f7fa;
+  background: var(--sk-hover-bg);
 }
 .script-ctx-menu li.danger {
-  color: #f56c6c;
+  color: var(--sk-danger);
 }
 </style>

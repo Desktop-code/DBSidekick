@@ -1,19 +1,32 @@
 <template>
   <div class="ds-panel">
+    <section ref="dsBlockRef" class="block ds-block" :class="{ collapsed: !dsOpen }">
     <div class="panel-head">
-      <span class="panel-title">数据源</span>
+      <button type="button" class="section-toggle" @click="dsOpen = !dsOpen">
+        <el-icon :size="12">
+          <ArrowDown v-if="dsOpen" />
+          <ArrowRight v-else />
+        </el-icon>
+        <span class="panel-title">数据源</span>
+      </button>
       <div class="head-actions">
         <el-button size="small" text type="primary" @click="openCreate">+ 新建连接</el-button>
         <el-button size="small" text :icon="Refresh" :loading="refreshing" title="刷新" @click="onRefresh" />
+        <el-tooltip content="收起" placement="bottom">
+          <button type="button" class="fold-btn" aria-label="收起" @click="emit('collapse')">
+            <el-icon :size="16"><Fold /></el-icon>
+          </button>
+        </el-tooltip>
       </div>
     </div>
 
-    <div class="tree-wrap">
-    <el-tree
+    <div v-show="dsOpen" class="tree-wrap">
+      <el-tree
       v-if="rootReady"
       :key="treeKey"
       ref="treeRef"
       lazy
+      :indent="18"
       :load="loadNode"
       :data="rootNodes"
       node-key="id"
@@ -31,7 +44,7 @@
           <span class="status-dot" :class="dsDot(data)" />
           <el-icon class="type-icon" :class="dsKind(data)"><Coin /></el-icon>
           <span class="name">{{ data.label }}</span>
-          <span v-if="dbCount(data) != null" class="meta">{{ dbCount(data) }} 个库</span>
+          <span v-if="dbCount(data) != null" class="db-badge" :title="`${dbCount(data)} 个库`">{{ dbCount(data) }}</span>
           <el-icon v-if="busyId === data.datasourceId" class="spin"><Loading /></el-icon>
           <el-tag v-if="data.unsynced" type="danger" size="small" effect="plain" class="unsync">未同步</el-tag>
           <button type="button" class="node-refresh" title="刷新" @click.stop="onRefreshNode(data)">
@@ -43,6 +56,7 @@
           class="ds-node db-node"
           :class="{ current: isCurrentDb(data), busy: busyId === data.id }"
         >
+          <el-icon class="node-kind"><Folder /></el-icon>
           <span class="name">{{ data.label }}</span>
           <span v-if="data.tableCount != null" class="meta">{{ data.tableCount }} 张表</span>
           <el-icon v-if="busyId === data.id" class="spin"><Loading /></el-icon>
@@ -51,21 +65,24 @@
           </button>
         </span>
         <span v-else class="tree-node">
-          <span class="node-main">
-            <span class="icon">{{ data.icon || '' }}</span>
-            <span class="label">{{ data.label }}</span>
-          </span>
+          <el-icon class="node-kind"><Document /></el-icon>
+          <span class="label">{{ data.label }}</span>
           <span v-if="data.nodeType === 'table' && data.tableComment" class="comment">
             {{ data.tableComment }}
           </span>
         </span>
       </template>
     </el-tree>
-    <div v-else-if="!refreshing" class="empty">暂无数据源</div>
+    <div v-else-if="!refreshing" class="empty">
+      还没有数据源，点击
+      <button type="button" class="empty-link" @click="openCreate">+ 新建连接</button>
+      开始
+    </div>
     <div v-else class="empty">加载中…</div>
     </div>
+    </section>
 
-    <div class="history-block" :class="{ collapsed: !historyOpen }">
+    <section ref="historyBlockRef" class="block history-block" :class="{ collapsed: !historyOpen }">
       <div class="history-head">
         <button type="button" class="history-toggle" @click="historyOpen = !historyOpen">
           <el-icon :size="12">
@@ -106,14 +123,17 @@
             @click="openSession(s)"
             @contextmenu.prevent="onSessionCtx($event, s)"
           >
-            <span class="title">{{ s.title || '新会话' }}</span>
+            <el-tooltip :content="s.title || '新会话'" placement="top" :show-after="300">
+              <span class="title">{{ s.title || '新会话' }}</span>
+            </el-tooltip>
             <span class="meta">{{ s.messageCount || 0 }} 条 · {{ formatRelative(s.updatedAt) }}</span>
             <button type="button" class="more" title="更多" @click.stop="onSessionCtx($event, s)">⋯</button>
           </li>
         </template>
-        <li v-if="!sessionLoading && !sessions.length" class="empty muted">暂无历史会话</li>
+        <li v-if="!sessionLoading && !filteredSessions.length && sessionKeyword.trim()" class="empty">没有找到匹配的会话</li>
+        <li v-else-if="!sessionLoading && !sessions.length" class="empty">还没有会话记录</li>
       </ul>
-    </div>
+    </section>
 
     <!-- 右键菜单：数据源 -->
     <teleport to="body">
@@ -124,18 +144,43 @@
         @contextmenu.prevent="closeCtx"
       >
         <ul
+          ref="menuRef"
           class="ctx-menu"
           :style="{ left: ctx.x + 'px', top: ctx.y + 'px' }"
           @click.stop
         >
-          <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxEdit()">编辑连接</li>
-          <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxTest()">测试连接</li>
-          <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxSync()">同步 Schema</li>
-          <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxIndex()">索引到 Milvus</li>
-          <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxAliases()">生成表别名</li>
-          <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxInfer()">推断表关系</li>
-          <li @click="onCtxRelations()">管理表关系</li>
-          <li class="danger" :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxDelete()">删除连接</li>
+          <template v-if="ctx.data?.nodeType === 'datasource'">
+            <li @click="onDsNewSession()"><el-icon class="mi" :size="14"><ChatDotRound /></el-icon>新建会话</li>
+            <li @click="onDsNewQuery()"><el-icon class="mi" :size="14"><EditPen /></el-icon>新建查询</li>
+            <li class="sep" />
+            <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxEdit()"><el-icon class="mi" :size="14"><Edit /></el-icon>编辑连接</li>
+            <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxTest()"><el-icon class="mi" :size="14"><CircleCheck /></el-icon>测试连接</li>
+            <li class="sep" />
+            <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxSyncInstance()"><el-icon class="mi" :size="14"><Refresh /></el-icon>同步整个实例的 Schema</li>
+            <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxIndexInstance()"><el-icon class="mi" :size="14"><Coin /></el-icon>索引整个实例到 Milvus</li>
+            <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxAliases()"><el-icon class="mi" :size="14"><CollectionTag /></el-icon>生成所有表别名</li>
+            <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxInferInstance()"><el-icon class="mi" :size="14"><Share /></el-icon>推断所有表关系</li>
+            <li @click="onCtxRelations()"><el-icon class="mi" :size="14"><Connection /></el-icon>管理表关系</li>
+            <li class="sep" />
+            <li @click="onCtxBackup()"><el-icon class="mi" :size="14"><Download /></el-icon>备份此连接的数据</li>
+            <li class="sep" />
+            <li class="danger" :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxDelete()"><el-icon class="mi" :size="14"><Delete /></el-icon>删除连接</li>
+          </template>
+          <template v-else-if="ctx.data?.nodeType === 'database'">
+            <li @click="onCtxNewSession()"><el-icon class="mi" :size="14"><ChatDotRound /></el-icon>新建会话（绑定此库）</li>
+            <li @click="onCtxNewQuery()"><el-icon class="mi" :size="14"><EditPen /></el-icon>新建查询（绑定此库）</li>
+            <li class="sep" />
+            <li @click="onCtxRefreshTables()"><el-icon class="mi" :size="14"><Refresh /></el-icon>刷新表列表</li>
+            <li class="sep" />
+            <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxSyncDatabase()"><el-icon class="mi" :size="14"><Refresh /></el-icon>同步此库的 Schema</li>
+            <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxIndexDatabase()"><el-icon class="mi" :size="14"><Coin /></el-icon>索引此库到 Milvus</li>
+            <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxAliases()"><el-icon class="mi" :size="14"><CollectionTag /></el-icon>生成此库的表别名</li>
+            <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxInferDatabase()"><el-icon class="mi" :size="14"><Share /></el-icon>推断此库的表关系</li>
+            <li class="sep" />
+            <li @click="onCtxCopyDbName()"><el-icon class="mi" :size="14"><DocumentCopy /></el-icon>复制库名</li>
+            <li class="sep" />
+            <li class="warn" :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxClearIndex()"><el-icon class="mi" :size="14"><Delete /></el-icon>清空此库的索引</li>
+          </template>
         </ul>
       </div>
     </teleport>
@@ -171,18 +216,42 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, ArrowRight, Coin, Loading, Refresh, Search } from '@element-plus/icons-vue'
+import {
+  ArrowDown,
+  ArrowRight,
+  ChatDotRound,
+  CircleCheck,
+  Coin,
+  CollectionTag,
+  Connection,
+  Delete,
+  Document,
+  DocumentCopy,
+  Download,
+  Edit,
+  EditPen,
+  Fold,
+  Folder,
+  Loading,
+  Refresh,
+  Search,
+  Share
+} from '@element-plus/icons-vue'
 import DbConfigDialog from './DbConfigDialog.vue'
 import { removeDatasource, testDatasource, deleteCheckDatasource } from '../api/datasource'
-import { generateAliases, indexSchema, inferRelations, listDatabases, listTables, syncSchema } from '../api/schema'
+import { clearSchemaIndex, generateAliases, indexSchema, inferRelations, listDatabases, listTables, syncSchema } from '../api/schema'
+import { backupData, chooseSystemFile } from '../api/system'
 import { deleteSession, listSessions, renameSession } from '../api/session'
 import { useAppStore } from '../stores/app'
 import { useTabsStore } from '../stores/tabs'
+
+const emit = defineEmits(['collapse'])
 
 const appStore = useAppStore()
 const tabsStore = useTabsStore()
 
 const treeRef = ref(null)
+const menuRef = ref(null)
 const refreshing = ref(false)
 const rootReady = ref(false)
 const rootNodes = ref([])
@@ -207,7 +276,11 @@ const sessionLoading = ref(false)
 const sessionKeyword = ref('')
 const sessionSearchRef = ref(null)
 const HISTORY_KEY = 'dbsidekick.historyOpen'
+const DS_SECTION_KEY = 'dbsidekick.dsSectionOpen'
 const historyOpen = ref(localStorage.getItem(HISTORY_KEY) !== '0')
+const dsOpen = ref(localStorage.getItem(DS_SECTION_KEY) !== '0')
+const dsBlockRef = ref(null)
+const historyBlockRef = ref(null)
 const searchOpen = ref(false)
 let sessionDebounce = null
 
@@ -238,7 +311,7 @@ function dsDot(data) {
   const status = appStore.datasourceStatus[data?.datasourceId]
   if (status === 'up') return 'green'
   if (status === 'down') return 'red'
-  return 'gray'
+  return 'hollow'
 }
 
 function dbCount(data) {
@@ -249,11 +322,6 @@ function dbCount(data) {
 function isCurrentDb(data) {
   return appStore.currentDatasourceId === data?.datasourceId
     && appStore.currentDatabase === (data?.database || data?.label)
-}
-
-function workingDatabase(data) {
-  if (data?.nodeType === 'database') return data.database || data.label || ''
-  return appStore.currentDatabase || data?.raw?.database || ''
 }
 
 async function onRefreshNode(data) {
@@ -279,27 +347,30 @@ async function onRefreshDatabase(data) {
   }
 }
 
+const filteredSessions = computed(() => {
+  const q = sessionKeyword.value.trim().toLowerCase()
+  if (!q) return sessions.value
+  return sessions.value.filter((s) => String(s.title || '新会话').toLowerCase().includes(q))
+})
+
 const sessionGroups = computed(() => {
   const now = new Date()
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
   const startOfYesterday = startOfToday - 86400000
   const weekday = now.getDay() || 7
   const startOfWeek = startOfToday - (weekday - 1) * 86400000
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime()
   const buckets = [
     { label: '今天', items: [] },
     { label: '昨天', items: [] },
     { label: '本周', items: [] },
-    { label: '本月', items: [] },
     { label: '更早', items: [] }
   ]
-  for (const s of sessions.value) {
+  for (const s of filteredSessions.value) {
     const t = Date.parse(String(s.updatedAt || '').replace(' ', 'T'))
     if (Number.isNaN(t) || t >= startOfToday) buckets[0].items.push(s)
     else if (t >= startOfYesterday) buckets[1].items.push(s)
     else if (t >= startOfWeek) buckets[2].items.push(s)
-    else if (t >= startOfMonth) buckets[3].items.push(s)
-    else buckets[4].items.push(s)
+    else buckets[3].items.push(s)
   }
   return buckets.filter((b) => b.items.length)
 })
@@ -314,13 +385,13 @@ function formatRelative(raw) {
   const sec = Math.floor(diff / 1000)
   if (sec < 60) return '刚刚'
   const min = Math.floor(sec / 60)
-  if (min < 60) return `${min}分钟前`
+  if (min < 60) return `${min}分`
   const hour = Math.floor(min / 60)
-  if (hour < 24) return `${hour}小时前`
+  if (hour < 24) return `${hour}h`
   const day = Math.floor(hour / 24)
   if (day === 1) return '昨天'
-  if (day < 7) return `${day}天前`
-  if (day < 30) return `${Math.floor(day / 7)}周前`
+  if (day < 7) return `${day}天`
+  if (day < 30) return `${Math.floor(day / 7)}周`
   return String(raw).slice(0, 10)
 }
 
@@ -336,6 +407,26 @@ async function toggleSearch() {
   await nextTick()
   sessionSearchRef.value?.focus?.()
 }
+
+watch(dsOpen, (open) => {
+  localStorage.setItem(DS_SECTION_KEY, open ? '1' : '0')
+})
+
+watch(
+  () => appStore.sidebarFocusToken,
+  async (token) => {
+    if (!token) return
+    if (appStore.sidebarFocus === 'datasource') {
+      dsOpen.value = true
+      await nextTick()
+      dsBlockRef.value?.scrollIntoView?.({ block: 'nearest' })
+    } else if (appStore.sidebarFocus === 'history') {
+      historyOpen.value = true
+      await nextTick()
+      historyBlockRef.value?.scrollIntoView?.({ block: 'nearest' })
+    }
+  }
+)
 
 watch(historyOpen, (open) => {
   localStorage.setItem(HISTORY_KEY, open ? '1' : '0')
@@ -578,29 +669,40 @@ function onNodeClick(data) {
     if (data.raw?.database) {
       appStore.setCurrentDatabase(data.raw.database)
     }
+    testConnectionNode(data)
     return
   }
   if (data?.nodeType === 'database') {
-    const dsId = data.datasourceId
-    const db = data.database || data.label
-    const active = tabsStore.activeTab
-    const hasSession = !!(
-      appStore.currentSessionId
-      || (active?.type === 'aiChat' && active?.props?.sessionId)
-    )
-    const open = () => appStore.openSessionDialog({ datasourceId: dsId, dbName: db })
-    if (!hasSession) {
-      appStore.setCurrentDatasource(dsId)
-      appStore.setCurrentDatabase(db)
-      open()
-      return
-    }
-    ElMessageBox.confirm('当前已有会话，是否新建？', '新建会话', {
-      confirmButtonText: '是',
-      cancelButtonText: '否',
-      type: 'warning'
-    }).then(open).catch(() => {})
+    appStore.setCurrentDatasource(data.datasourceId)
+    appStore.setCurrentDatabase(data.database || data.label)
   }
+}
+
+function schemaScope() {
+  const data = ctx.data
+  if (data?.nodeType !== 'database' || !data.datasourceId) return null
+  return {
+    datasourceId: data.datasourceId,
+    dbName: data.database || data.label || ''
+  }
+}
+
+function onCtxNewSession() {
+  const scope = schemaScope()
+  closeCtx()
+  if (!scope?.dbName) return
+  appStore.setCurrentDatasource(scope.datasourceId)
+  appStore.setCurrentDatabase(scope.dbName)
+  appStore.openSessionDialog({ datasourceId: scope.datasourceId, dbName: scope.dbName })
+}
+
+function onCtxNewQuery() {
+  const scope = schemaScope()
+  closeCtx()
+  if (!scope) return
+  appStore.setCurrentDatasource(scope.datasourceId)
+  if (scope.dbName) appStore.setCurrentDatabase(scope.dbName)
+  tabsStore.openQueryEditor({ initialDatasourceId: scope.datasourceId })
 }
 
 function onContextMenu(event, data) {
@@ -611,6 +713,59 @@ function onContextMenu(event, data) {
   ctx.x = event.clientX
   ctx.y = event.clientY
   ctx.visible = true
+  nextTick(() => {
+    const el = menuRef.value
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const pad = 8
+    let x = ctx.x
+    let y = ctx.y
+    if (x + rect.width > window.innerWidth - pad) {
+      x = Math.max(pad, window.innerWidth - rect.width - pad)
+    }
+    if (y + rect.height > window.innerHeight - pad) {
+      y = Math.max(pad, window.innerHeight - rect.height - pad)
+    }
+    ctx.x = x
+    ctx.y = y
+  })
+}
+
+function onDsNewSession() {
+  const data = ctx.data
+  closeCtx()
+  if (!data?.datasourceId) return
+  const db = data.raw?.database || ''
+  appStore.setCurrentDatasource(data.datasourceId)
+  if (db) appStore.setCurrentDatabase(db)
+  appStore.openSessionDialog({ datasourceId: data.datasourceId, dbName: db })
+}
+
+function onDsNewQuery() {
+  const data = ctx.data
+  closeCtx()
+  if (!data?.datasourceId) return
+  appStore.setCurrentDatasource(data.datasourceId)
+  if (data.raw?.database) appStore.setCurrentDatabase(data.raw.database)
+  tabsStore.openQueryEditor({ initialDatasourceId: data.datasourceId })
+}
+
+function onCtxRefreshTables() {
+  const id = ctx.data?.id
+  closeCtx()
+  if (id) refreshTreeChildren(id)
+}
+
+async function onCtxCopyDbName() {
+  const name = schemaScope()?.dbName || ''
+  closeCtx()
+  if (!name) return
+  try {
+    await navigator.clipboard.writeText(name)
+    ElMessage.success('已复制库名')
+  } catch {
+    ElMessage.error('复制失败')
+  }
 }
 
 function closeCtx() {
@@ -623,13 +778,12 @@ function onCtxEdit() {
   if (ds) openEdit(ds)
 }
 
-async function onCtxTest() {
-  const data = ctx.data
-  closeCtx()
-  if (!data) return
-  busyId.value = data.datasourceId
+async function testConnectionNode(data) {
+  const ds = data?.raw
+  if (!ds?.id) return
+  if (busyId.value === ds.id) return
+  busyId.value = ds.id
   try {
-    const ds = data.raw
     const res = await testDatasource({
       id: ds.id,
       name: ds.name,
@@ -648,22 +802,25 @@ async function onCtxTest() {
       ElMessage.error(res?.message || '连接失败')
     }
   } catch (e) {
-    appStore.setDatasourceStatus(data.datasourceId, 'down')
+    appStore.setDatasourceStatus(ds.id, 'down')
     ElMessage.error(e?.message || '连接失败')
   } finally {
-    busyId.value = ''
+    if (busyId.value === ds.id) busyId.value = ''
   }
 }
 
-async function onCtxSync() {
+async function onCtxTest() {
   const data = ctx.data
   closeCtx()
   if (!data) return
-  const db = workingDatabase(data)
-  if (!db) {
-    ElMessage.warning('请先在左侧点选一个数据库')
-    return
-  }
+  await testConnectionNode(data)
+}
+
+async function onCtxSyncDatabase() {
+  const data = ctx.data
+  const db = data?.database || data?.label
+  closeCtx()
+  if (!data?.datasourceId || !db) return
   busyId.value = data.datasourceId
   const t0 = Date.now()
   try {
@@ -672,8 +829,7 @@ async function onCtxSync() {
     const m = res?.columnCount ?? 0
     const ms = res?.elapsedMs ?? Date.now() - t0
     ElMessage.success(`已同步 ${db}：${n} 张表，${m} 个字段（${ms} ms）`)
-    const key = data.nodeType === 'database' ? data.id : `db:${data.datasourceId}:${db}`
-    await refreshTreeChildren(key)
+    await refreshTreeChildren(data.id)
   } catch (e) {
     ElMessage.error(e?.response?.data?.message || e?.message || '同步失败')
   } finally {
@@ -681,15 +837,47 @@ async function onCtxSync() {
   }
 }
 
-async function onCtxIndex() {
+async function onCtxSyncInstance() {
   const data = ctx.data
   closeCtx()
-  if (!data) return
-  const db = workingDatabase(data)
-  if (!db) {
-    ElMessage.warning('请先在左侧点选一个数据库')
-    return
+  if (!data?.datasourceId) return
+  busyId.value = data.datasourceId
+  const loading = ElMessage({ message: '正在同步整个实例...', duration: 0, type: 'info' })
+  try {
+    const names = await listDatabases(data.datasourceId)
+    const list = Array.isArray(names) ? names : []
+    if (!list.length) {
+      ElMessage.warning('没有可同步的数据库')
+      return
+    }
+    let tables = 0
+    let cols = 0
+    let failed = 0
+    for (const db of list) {
+      try {
+        const res = await syncSchema(data.datasourceId, db)
+        tables += res?.tableCount ?? 0
+        cols += res?.columnCount ?? 0
+      } catch {
+        failed += 1
+      }
+    }
+    const ok = list.length - failed
+    ElMessage.success(`已同步 ${ok} 个库，${tables} 张表，${cols} 个字段${failed ? `，失败 ${failed} 个` : ''}`)
+    await refreshTreeChildren(data.id)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || e?.message || '同步失败')
+  } finally {
+    loading.close?.()
+    busyId.value = ''
   }
+}
+
+async function onCtxIndexDatabase() {
+  const data = ctx.data
+  const db = data?.database || data?.label
+  closeCtx()
+  if (!data?.datasourceId || !db) return
   busyId.value = data.datasourceId
   const t0 = Date.now()
   try {
@@ -705,10 +893,44 @@ async function onCtxIndex() {
   }
 }
 
-async function onCtxAliases() {
+async function onCtxIndexInstance() {
   const data = ctx.data
   closeCtx()
-  if (!data) return
+  if (!data?.datasourceId) return
+  busyId.value = data.datasourceId
+  const loading = ElMessage({ message: '正在索引整个实例...', duration: 0, type: 'info' })
+  try {
+    const names = await listDatabases(data.datasourceId)
+    const list = Array.isArray(names) ? names : []
+    if (!list.length) {
+      ElMessage.warning('没有可索引的数据库')
+      return
+    }
+    let indexed = 0
+    let failed = 0
+    for (const db of list) {
+      try {
+        const res = await indexSchema(data.datasourceId, db)
+        indexed += res?.indexedCount ?? 0
+      } catch {
+        failed += 1
+      }
+    }
+    if (indexed > 0) appStore.setDatasourceIndexed(data.datasourceId, true)
+    ElMessage.success(`已索引 ${indexed} 张表${failed ? `，${failed} 个库跳过或失败` : ''}`)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || e?.message || '索引失败')
+  } finally {
+    loading.close?.()
+    busyId.value = ''
+  }
+}
+
+async function onCtxAliases() {
+  const data = ctx.data
+  const db = data?.nodeType === 'database' ? (data.database || data.label) : ''
+  closeCtx()
+  if (!data?.datasourceId) return
   busyId.value = data.datasourceId
   const loading = ElMessage({
     message: '生成表别名中，预计 1-2 分钟...',
@@ -716,7 +938,7 @@ async function onCtxAliases() {
     type: 'info'
   })
   try {
-    const res = await generateAliases(data.datasourceId, false)
+    const res = await generateAliases(data.datasourceId, false, db || undefined)
     const n = res?.generated ?? 0
     const skipped = res?.skipped ?? 0
     const failed = res?.failed ?? 0
@@ -736,15 +958,11 @@ function onCtxRelations() {
   tabsStore.openRelationManage({ datasourceId: data.datasourceId })
 }
 
-async function onCtxInfer() {
+async function onCtxInferDatabase() {
   const data = ctx.data
+  const db = data?.database || data?.label
   closeCtx()
-  if (!data) return
-  const db = workingDatabase(data)
-  if (!db) {
-    ElMessage.warning('请先在左侧点选一个数据库')
-    return
-  }
+  if (!data?.datasourceId || !db) return
   busyId.value = data.datasourceId
   try {
     const res = await inferRelations(data.datasourceId, db)
@@ -754,6 +972,71 @@ async function onCtxInfer() {
     ElMessage.success(`推断 ${n} 条关系，涉及 ${t} 张表（${ms} ms）`)
   } catch (e) {
     ElMessage.error(e?.response?.data?.message || e?.message || '推断表关系失败')
+  } finally {
+    busyId.value = ''
+  }
+}
+
+async function onCtxInferInstance() {
+  const data = ctx.data
+  closeCtx()
+  if (!data?.datasourceId) return
+  busyId.value = data.datasourceId
+  try {
+    const res = await inferRelations(data.datasourceId)
+    const n = res?.inferredRelations ?? 0
+    const t = res?.tablesUpdated ?? 0
+    const ms = res?.elapsedMs ?? 0
+    ElMessage.success(`推断 ${n} 条关系，涉及 ${t} 张表（${ms} ms）`)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || e?.message || '推断表关系失败')
+  } finally {
+    busyId.value = ''
+  }
+}
+
+function backupFileName() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `dbsidekick-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.db`
+}
+
+async function onCtxBackup() {
+  closeCtx()
+  try {
+    const picked = await chooseSystemFile({
+      title: '保存备份',
+      mode: 'save',
+      defaultName: backupFileName()
+    })
+    if (picked?.canceled || !picked?.path) return
+    const res = await backupData(picked.path)
+    ElMessage.success(`备份成功：${res?.path || picked.path}`)
+  } catch {
+    // 拦截器已提示
+  }
+}
+
+async function onCtxClearIndex() {
+  const data = ctx.data
+  const db = data?.database || data?.label
+  closeCtx()
+  if (!data?.datasourceId || !db) return
+  try {
+    await ElMessageBox.confirm(`将清空库「${db}」的向量索引，表结构不受影响。确定继续？`, '清空索引', {
+      type: 'warning',
+      confirmButtonText: '清空',
+      cancelButtonText: '取消'
+    })
+  } catch {
+    return
+  }
+  busyId.value = data.datasourceId
+  try {
+    const res = await clearSchemaIndex(data.datasourceId, db)
+    ElMessage.success(`已清空 ${res?.deleted ?? 0} 条索引`)
+  } catch (e) {
+    ElMessage.error(e?.response?.data?.message || e?.message || '清空索引失败')
   } finally {
     busyId.value = ''
   }
@@ -871,62 +1154,41 @@ watch(
   height: 100%;
   display: flex;
   flex-direction: column;
-  padding: 12px;
+  gap: 8px;
+  padding: 8px;
+  background: var(--sk-bg);
   overflow: hidden;
   box-sizing: border-box;
 }
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
-  flex-shrink: 0;
-}
-.tree-wrap {
-  flex: 1;
-  min-height: 80px;
-  overflow: auto;
-}
-.tree-wrap :deep(.el-tree-node__content) {
-  height: 30px;
-}
-.tree-wrap :deep(.el-tree-node__content > .el-tree-node__expand-icon) {
-  padding: 4px;
-}
-.panel-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--sk-text-primary);
-  margin: 0 0 8px;
-}
-.panel-title.history {
-  margin: 0;
-  padding: 0;
-  border: none;
-}
-.history-block {
+.block {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  flex: 0 1 46%;
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--sk-border);
+  padding: 12px;
+  background: var(--sk-bg-elevated);
+  border-radius: 8px;
+  box-sizing: border-box;
 }
-.history-block.collapsed {
+.ds-block {
+  flex: 1 1 0;
+}
+.ds-block.collapsed {
   flex: 0 0 auto;
-  margin-top: 4px;
-  padding-top: 0;
-  border-top: none;
 }
+.panel-head,
 .history-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   flex-shrink: 0;
   gap: 4px;
 }
+.ds-block.collapsed .panel-head,
+.history-block.collapsed .history-head {
+  margin-bottom: 0;
+}
+.section-toggle,
 .history-toggle {
   display: inline-flex;
   align-items: center;
@@ -935,9 +1197,55 @@ watch(
   padding: 0;
   border: none;
   background: transparent;
-  color: inherit;
+  color: var(--sk-text-secondary);
   cursor: pointer;
   min-width: 0;
+}
+.tree-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.tree-wrap :deep(.el-tree) {
+  background: transparent;
+  color: var(--sk-text-primary);
+}
+.tree-wrap :deep(.el-tree-node__content) {
+  height: 32px;
+  border-radius: 6px;
+}
+.tree-wrap :deep(.el-tree-node__content:hover) {
+  background: var(--sk-hover-bg);
+}
+.tree-wrap :deep(.el-tree-node.is-current > .el-tree-node__content) {
+  background: var(--sk-active-bg);
+}
+.tree-wrap :deep(.el-tree-node__content > .el-tree-node__expand-icon) {
+  padding: 9px 6px;
+  margin-left: -2px;
+  font-size: 14px;
+  color: var(--sk-text-secondary);
+}
+.tree-wrap :deep(.el-tree-node__expand-icon svg) {
+  width: 14px;
+  height: 14px;
+}
+.tree-wrap :deep(.el-tree-node__expand-icon.is-leaf) {
+  color: transparent;
+}
+.panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--sk-text-primary);
+  margin: 0;
+}
+.history-block {
+  flex: 1 1 0;
+  margin: 0;
+  border: none;
+}
+.history-block.collapsed {
+  flex: 0 0 auto;
 }
 .session-search {
   margin-bottom: 6px;
@@ -946,12 +1254,12 @@ watch(
 .session-list {
   list-style: none;
   margin: 0;
-  padding: 0 2px 0 0;
+  padding: 0;
   overflow: auto;
   flex: 1;
   min-height: 0;
   scrollbar-width: thin;
-  scrollbar-color: #c5c8ce transparent;
+  scrollbar-color: var(--sk-text-tertiary) transparent;
 }
 .session-list::-webkit-scrollbar {
   width: 6px;
@@ -960,107 +1268,158 @@ watch(
   background: transparent;
 }
 .session-list::-webkit-scrollbar-thumb {
-  background: #c5c8ce;
+  background: var(--sk-text-tertiary);
   border-radius: 6px;
 }
 .session-list::-webkit-scrollbar-thumb:hover {
-  background: #909399;
+  background: var(--sk-text-tertiary);
 }
 .session-item {
-  position: relative;
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
   gap: 8px;
-  min-height: 28px;
-  padding: 4px 22px 4px 8px;
+  height: 32px;
+  max-height: 32px;
+  padding: 0 8px 0 12px;
   border-radius: 6px;
   cursor: pointer;
+  box-sizing: border-box;
+  overflow: hidden;
+  white-space: nowrap;
   transition: background 0.15s;
 }
 .session-item:hover {
-  background: var(--sk-bg);
+  background: var(--sk-hover-bg);
 }
 .session-item.active {
-  background: var(--sk-primary-light);
+  background: var(--sk-active-bg);
   box-shadow: inset 3px 0 0 var(--sk-primary);
 }
-.session-item .title {
-  flex: 1;
+.session-item :deep(.el-tooltip__trigger) {
+  flex: 1 1 auto;
   min-width: 0;
-  font-size: 13px;
-  color: var(--sk-text-primary);
+  overflow: hidden;
+  display: block;
+}
+.session-item .title {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
+  line-height: 32px;
+  color: var(--sk-text-primary);
 }
 .session-item .meta {
-  flex-shrink: 0;
+  flex: 0 0 88px;
+  width: 88px;
   font-size: 12px;
+  line-height: 32px;
   color: var(--sk-text-tertiary);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .session-item .more {
-  position: absolute;
-  right: 2px;
-  width: 20px;
+  width: 0;
   height: 20px;
   padding: 0;
   border: none;
   border-radius: 4px;
   background: transparent;
-  color: var(--sk-text-tertiary);
+  color: var(--sk-text-secondary);
   cursor: pointer;
   opacity: 0;
-  line-height: 1;
-  transition: opacity 0.15s, background 0.15s;
+  overflow: hidden;
+  line-height: 20px;
+  flex-shrink: 0;
 }
-.session-item:hover .more {
+.session-item:hover .more,
+.session-item:focus-within .more {
+  width: 20px;
   opacity: 1;
 }
 .session-item .more:hover {
-  background: var(--sk-card);
-  color: var(--sk-text-secondary);
+  background: var(--sk-bg-elevated);
+  color: var(--sk-text-primary);
 }
 .session-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   list-style: none;
-  margin: 8px 0 4px;
-  padding: 0 6px;
-  font-size: 12px;
-  color: var(--sk-text-tertiary);
+  margin: 12px 0 4px;
+  padding: 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--sk-text-strong);
 }
-.session-group:first-child {
-  margin-top: 0;
+.session-group::before {
+  content: '';
+  width: 3px;
+  height: 12px;
+  border-radius: 2px;
+  background: var(--sk-primary);
+  flex-shrink: 0;
 }
 .ds-node {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 1;
   width: 100%;
   min-width: 0;
+  overflow: hidden;
   padding-right: 2px;
   font-size: 13px;
 }
 .ds-node.current .name {
-  color: var(--sk-primary, #2563eb);
+  color: var(--sk-primary, var(--sk-primary-strong));
   font-weight: 600;
 }
 .ds-node .name {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--sk-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+.db-node .name,
+.tree-node .label {
+  font-size: 13px;
+  font-weight: 400;
+}
+.db-badge {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--sk-hover-bg);
+  color: var(--sk-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
 }
 .ds-node .meta {
   flex-shrink: 0;
+  margin-left: auto;
   font-size: 12px;
   color: var(--sk-text-tertiary);
 }
 .status-dot {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   flex-shrink: 0;
-  background: var(--sk-text-tertiary);
+  box-sizing: border-box;
+  background: transparent;
 }
 .status-dot.green {
   background: var(--sk-success);
@@ -1068,21 +1427,26 @@ watch(
 .status-dot.red {
   background: var(--sk-danger);
 }
-.status-dot.gray {
-  background: var(--sk-text-tertiary);
+.status-dot.hollow {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--sk-text-tertiary);
 }
-.type-icon {
+.type-icon,
+.node-kind {
   font-size: 14px;
   flex-shrink: 0;
 }
 .type-icon.mysql {
-  color: #3b82f6;
+  color: var(--sk-primary);
 }
 .type-icon.postgres {
-  color: #1e3a8a;
+  color: var(--sk-postgres);
+}
+.node-kind {
+  color: var(--sk-text-tertiary);
 }
 .node-refresh {
-  margin-left: auto;
+  margin-left: 4px;
   width: 18px;
   height: 18px;
   padding: 0;
@@ -1107,29 +1471,48 @@ watch(
 .head-actions {
   display: flex;
   align-items: center;
-  gap: 0;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.fold-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--sk-border);
+  border-radius: 4px;
+  background: var(--sk-card);
+  color: var(--sk-text-secondary);
+  cursor: pointer;
+}
+.fold-btn:hover {
+  color: var(--sk-primary);
+  background: var(--sk-primary-light);
 }
 .tree-node {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  line-height: 1.35;
-  padding-right: 4px;
-  font-size: 13px;
-}
-.node-main {
-  display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  color: var(--sk-text-primary);
 }
-.icon {
-  font-size: 12px;
+.tree-node .label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .comment {
-  font-size: 11px;
-  color: #909399;
-  margin-left: 18px;
-  max-width: 160px;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--sk-text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1152,11 +1535,21 @@ watch(
 }
 .empty {
   font-size: 12px;
-  color: #909399;
+  line-height: 1.5;
+  color: var(--sk-text-tertiary);
   padding: 8px 4px;
 }
-.empty.muted {
-  opacity: 0.8;
+.empty-link {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--sk-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.head-actions :deep(.el-button) {
+  padding: 0 2px;
+  font-size: 12px;
 }
 </style>
 
@@ -1168,30 +1561,58 @@ watch(
 }
 .ctx-menu {
   position: fixed;
-  min-width: 150px;
+  min-width: 168px;
+  width: max-content;
   margin: 0;
   padding: 4px 0;
   list-style: none;
-  background: #fff;
-  border: 1px solid #e4e7ed;
+  background: var(--sk-bg-elevated);
+  border: 1px solid var(--sk-border);
   border-radius: 6px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 6px 16px var(--sk-shadow-pop);
   z-index: 4001;
 }
 .ctx-menu li {
-  padding: 8px 14px;
+  height: 32px;
+  margin: 0;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 13px;
-  color: #303133;
+  color: var(--sk-text-primary);
   cursor: pointer;
+  white-space: nowrap;
+  box-sizing: border-box;
 }
-.ctx-menu li:hover:not(.disabled) {
-  background: #f5f7fa;
+.ctx-menu li .mi {
+  flex-shrink: 0;
+  color: var(--sk-text-secondary);
 }
-.ctx-menu li.danger {
-  color: #f56c6c;
+.ctx-menu li:hover:not(.disabled):not(.sep) {
+  background: var(--sk-hover-bg);
+}
+.ctx-menu li.danger,
+.ctx-menu li.danger .mi {
+  color: var(--sk-danger);
+}
+.ctx-menu li.warn,
+.ctx-menu li.warn .mi {
+  color: var(--sk-warning);
 }
 .ctx-menu li.disabled {
-  color: #c0c4cc;
+  color: var(--sk-text-tertiary);
   cursor: not-allowed;
+}
+.ctx-menu li.disabled .mi {
+  color: var(--sk-text-tertiary);
+}
+.ctx-menu li.sep {
+  height: 1px;
+  margin: 6px 0;
+  padding: 0;
+  background: var(--sk-border-strong);
+  cursor: default;
+  pointer-events: none;
 }
 </style>

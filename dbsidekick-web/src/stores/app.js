@@ -4,6 +4,24 @@ import { text2sqlHealth, milvusHealth, embeddingHealth } from '../api/text2sql'
 
 let milvusRecheckTimer = null
 
+function readPanelOpen(key) {
+  try {
+    return localStorage.getItem(key) !== '0'
+  } catch {
+    return true
+  }
+}
+
+function readRailSection() {
+  try {
+    const value = localStorage.getItem('dbsidekick.railSection')
+    if (value === 'history' || value === 'sql' || value === 'settings' || value === 'datasource') return value
+  } catch {
+    // 读不到时回到数据源
+  }
+  return 'datasource'
+}
+
 export const useAppStore = defineStore('app', {
   state: () => ({
     datasources: [],
@@ -37,7 +55,12 @@ export const useAppStore = defineStore('app', {
       datasourceId: '',
       dbName: '',
       token: 0
-    }
+    },
+    leftPanelOpen: readPanelOpen('dbsidekick.leftOpen'),
+    rightPanelOpen: readPanelOpen('dbsidekick.rightOpen'),
+    /** 折叠栏当前高亮：datasource / history / sql / settings */
+    sidebarFocus: readRailSection(),
+    sidebarFocusToken: 0
   }),
   getters: {
     currentDatasource(state) {
@@ -128,6 +151,31 @@ export const useAppStore = defineStore('app', {
     },
     focusFirstScript() {
       this.scriptFocusToken += 1
+    },
+    setLeftPanelOpen(open) {
+      this.leftPanelOpen = !!open
+      localStorage.setItem('dbsidekick.leftOpen', this.leftPanelOpen ? '1' : '0')
+    },
+    setRightPanelOpen(open) {
+      this.rightPanelOpen = !!open
+      localStorage.setItem('dbsidekick.rightOpen', this.rightPanelOpen ? '1' : '0')
+    },
+    focusSidebar(section) {
+      const allowed = section === 'history' || section === 'sql' || section === 'settings' || section === 'datasource'
+        ? section
+        : 'datasource'
+      this.sidebarFocus = allowed
+      this.sidebarFocusToken += 1
+      try {
+        localStorage.setItem('dbsidekick.railSection', allowed)
+      } catch {
+        // 忽略写入失败
+      }
+      if (allowed === 'datasource' || allowed === 'history') {
+        this.setLeftPanelOpen(true)
+      } else if (allowed === 'sql') {
+        this.setRightPanelOpen(true)
+      }
     },
     scheduleMilvusRecheck() {
       if (milvusRecheckTimer) return

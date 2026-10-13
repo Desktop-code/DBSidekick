@@ -54,8 +54,12 @@ tokenizer.json
 # 文件目录
 docs/test-report-*
 docs/README.MD
+docs/code-review-*
 
 # Cursor / AI 工具本地配置（不入库）
 .cursorignore
 .cursorrules
 AGENTS.md
+
+# 更新文件
+upd_log.txt

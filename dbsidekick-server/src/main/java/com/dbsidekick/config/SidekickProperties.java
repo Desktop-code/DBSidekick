@@ -90,6 +90,8 @@ public class SidekickProperties {
         private String tempTablePrefixes;
         private Integer adjacencyWhitelistLimit;
         private Integer inferredThresholdMultiplier;
+        private Integer maxConsecutiveDislikes;
+        private Boolean requireStrongSignal;
         private final Score score = new Score();
 
         public Integer getConfidenceThreshold() {
@@ -132,6 +134,22 @@ public class SidekickProperties {
             this.inferredThresholdMultiplier = inferredThresholdMultiplier;
         }
 
+        public Integer getMaxConsecutiveDislikes() {
+            return maxConsecutiveDislikes;
+        }
+
+        public void setMaxConsecutiveDislikes(Integer maxConsecutiveDislikes) {
+            this.maxConsecutiveDislikes = maxConsecutiveDislikes;
+        }
+
+        public Boolean getRequireStrongSignal() {
+            return requireStrongSignal;
+        }
+
+        public void setRequireStrongSignal(Boolean requireStrongSignal) {
+            this.requireStrongSignal = requireStrongSignal;
+        }
+
         public Score getScore() {
             return score;
         }
@@ -140,6 +158,8 @@ public class SidekickProperties {
     public static class Score {
         private Integer sqlSuccess;
         private Integer rowCountPositive;
+        private Integer userLiked;
+        private Integer userDisliked;
         private Integer savedToScript;
         private Integer userConfirmed;
         private Integer userRejected;
@@ -158,6 +178,22 @@ public class SidekickProperties {
 
         public void setRowCountPositive(Integer rowCountPositive) {
             this.rowCountPositive = rowCountPositive;
+        }
+
+        public Integer getUserLiked() {
+            return userLiked;
+        }
+
+        public void setUserLiked(Integer userLiked) {
+            this.userLiked = userLiked;
+        }
+
+        public Integer getUserDisliked() {
+            return userDisliked;
+        }
+
+        public void setUserDisliked(Integer userDisliked) {
+            this.userDisliked = userDisliked;
         }
 
         public Integer getSavedToScript() {

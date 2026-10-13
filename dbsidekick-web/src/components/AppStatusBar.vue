@@ -25,7 +25,7 @@ const appStore = useAppStore()
   padding: 0 12px;
   font-size: 12px;
   color: var(--sk-text-secondary);
-  background: #fafbfc;
+  background: var(--sk-bg-sidebar);
   border-top: 1px solid var(--sk-border);
 }
 .item {
@@ -38,6 +38,6 @@ const appStore = useAppStore()
   color: var(--sk-text-tertiary);
 }
 .sep {
-  color: #cbd5e1;
+  color: var(--sk-border-strong);
 }
 </style>

@@ -10,9 +10,11 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -62,6 +64,63 @@ public class RelationUsageService {
             }
         } catch (Exception ex) {
             log.warn("[Sidekick] inferred relation migration skipped: {}", ex.getMessage());
+        }
+        migrateV2ConfidenceRules();
+    }
+
+    /**
+     * 置信度 v2：只靠 USED 堆分的 CONFIRMED 降回 PENDING；阈值默认提到 6。
+     * app_settings.relation_v2_migrated=true 后只跑一次。
+     */
+    void migrateV2ConfidenceRules() {
+        try (Connection conn = sqliteInitializer.open()) {
+            if (settingIsTrue(conn, "relation_v2_migrated")) {
+                return;
+            }
+            int demoted = demoteUsedOnlyConfirmed(conn);
+            bumpThresholdIfOldDefault(conn);
+            writeSetting(conn, "relation_v2_migrated", "true");
+            log.info("[Sidekick] relation v2 migration done, demoted={}", demoted);
+        } catch (Exception ex) {
+            log.warn("[Sidekick] relation v2 migration skipped: {}", ex.getMessage());
+        }
+    }
+
+    private int demoteUsedOnlyConfirmed(Connection conn) throws Exception {
+        String sql = """
+                UPDATE relation_usage
+                SET status = 'PENDING'
+                WHERE status = 'CONFIRMED'
+                  AND (sources IS NULL OR (
+                    UPPER(',' || REPLACE(IFNULL(sources, ''), ' ', '') || ',') NOT LIKE '%,MANUAL,%'
+                    AND UPPER(',' || REPLACE(IFNULL(sources, ''), ' ', '') || ',') NOT LIKE '%,SAVED,%'
+                    AND UPPER(',' || REPLACE(IFNULL(sources, ''), ' ', '') || ',') NOT LIKE '%,LIKED,%'
+                  ))
+                """;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            return ps.executeUpdate();
+        }
+    }
+
+    private void bumpThresholdIfOldDefault(Connection conn) throws Exception {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT value FROM relation_config WHERE key = 'confidence-threshold'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return;
+                }
+                String value = rs.getString("value");
+                if (!"3".equals(value == null ? "" : value.trim())) {
+                    return;
+                }
+            }
+        }
+        try (PreparedStatement ps = conn.prepareStatement("""
+                UPDATE relation_config SET value = '6', updated_at = ?
+                WHERE key = 'confidence-threshold'
+                """)) {
+            ps.setString(1, TS.format(Instant.now()));
+            ps.executeUpdate();
         }
     }
 
@@ -494,15 +553,89 @@ public class RelationUsageService {
     }
 
     /**
-     * INFERRED 且没有 MANUAL 时，晋升阈值乘以 inferred-threshold-multiplier（默认 2）。
+     * INFERRED 且没有强信号时，晋升阈值乘以 inferred-threshold-multiplier（默认 2）。
+     * 强信号：MANUAL / SAVED / LIKED。
      */
     static int promotionThreshold(String sources, int base, int multiplier) {
-        int threshold = base <= 0 ? 3 : base;
+        int threshold = base <= 0 ? 6 : base;
         int mul = multiplier <= 0 ? 2 : multiplier;
-        if (hasToken(sources, "INFERRED") && !hasToken(sources, "MANUAL")) {
+        if (hasToken(sources, "INFERRED") && !hasStrongSignal(sources)) {
             return threshold * mul;
         }
         return threshold;
+    }
+
+    public static boolean hasStrongSignal(String sources) {
+        return hasToken(sources, "MANUAL")
+                || hasToken(sources, "SAVED")
+                || hasToken(sources, "LIKED");
+    }
+
+    /** 展示用：CONFIRMED 但无强信号 → AUTO；有强信号 → CONFIRMED。 */
+    public static String displayKind(RelationUsage row) {
+        if (row == null || !StringUtils.hasText(row.getStatus())) {
+            return "PENDING";
+        }
+        String status = row.getStatus().trim().toUpperCase(Locale.ROOT);
+        if (RelationUsage.STATUS_REJECTED.equals(status)) {
+            return "REJECTED";
+        }
+        if (RelationUsage.STATUS_PENDING.equals(status)) {
+            return "PENDING";
+        }
+        if (RelationUsage.STATUS_CONFIRMED.equals(status)) {
+            return hasStrongSignal(row.getSources()) ? "CONFIRMED" : "AUTO";
+        }
+        return status;
+    }
+
+    /**
+     * 来源明细：每个 source token 与配置加分，供管理页解释「为何被确认」。
+     */
+    public List<Map<String, Object>> sourceScoreDetails(String sources) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (!StringUtils.hasText(sources)) {
+            return out;
+        }
+        for (String raw : sources.split(",")) {
+            if (!StringUtils.hasText(raw)) {
+                continue;
+            }
+            String tag = raw.trim().toUpperCase(Locale.ROOT);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("source", tag);
+            item.put("label", sourceLabel(tag));
+            item.put("score", sourceUnitScore(tag));
+            item.put("strong", "MANUAL".equals(tag) || "SAVED".equals(tag) || "LIKED".equals(tag));
+            out.add(item);
+        }
+        return out;
+    }
+
+    private static String sourceLabel(String tag) {
+        return switch (tag) {
+            case "USED" -> "执行成功/有行";
+            case "SAVED" -> "保存脚本";
+            case "MANUAL" -> "手动确认";
+            case "LIKED" -> "结果有用";
+            case "DISLIKED" -> "结果没用";
+            case "INFERRED" -> "推断导入";
+            case "RESET" -> "重置";
+            default -> tag;
+        };
+    }
+
+    private int sourceUnitScore(String tag) {
+        return switch (tag) {
+            case "USED" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_SQL_SUCCESS)
+                    + relationConfigService.getInt(RelationConfigService.KEY_SCORE_ROW_COUNT);
+            case "SAVED" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_SAVED);
+            case "MANUAL" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_CONFIRMED);
+            case "LIKED" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_LIKED);
+            case "DISLIKED" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_DISLIKED);
+            case "REJECTED" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_REJECTED);
+            default -> 0;
+        };
     }
 
     private void promoteIfNeeded(Connection conn, RelationUsage r) throws Exception {
@@ -516,13 +649,142 @@ public class RelationUsageService {
                 r.getSources(),
                 relationConfigService.confidenceThreshold(),
                 relationConfigService.getInt(RelationConfigService.KEY_INFERRED_MULTIPLIER, 2));
-        if (r.getConfidence() >= threshold) {
-            r.setStatus(RelationUsage.STATUS_CONFIRMED);
+        if (r.getConfidence() < threshold) {
+            return;
+        }
+        if (relationConfigService.requireStrongSignal() && !hasStrongSignal(r.getSources())) {
+            return;
+        }
+        r.setStatus(RelationUsage.STATUS_CONFIRMED);
+        updateRow(conn, r);
+        log.info("[Sidekick] relation promoted: {}.{} → {}.{} (confidence={}, sources={})",
+                r.getSourceTable(), r.getSourceColumn(),
+                r.getTargetTable(), r.getTargetColumn(), r.getConfidence(), r.getSources());
+    }
+
+    private void demoteIfNeeded(Connection conn, RelationUsage r) throws Exception {
+        if (r == null || !RelationUsage.STATUS_CONFIRMED.equals(r.getStatus())) {
+            return;
+        }
+        int threshold = promotionThreshold(
+                r.getSources(),
+                relationConfigService.confidenceThreshold(),
+                relationConfigService.getInt(RelationConfigService.KEY_INFERRED_MULTIPLIER, 2));
+        boolean below = r.getConfidence() < threshold;
+        boolean lostSignal = relationConfigService.requireStrongSignal() && !hasStrongSignal(r.getSources());
+        if (below || lostSignal) {
+            r.setStatus(RelationUsage.STATUS_PENDING);
             updateRow(conn, r);
-            log.info("[Sidekick] relation promoted: {}.{} → {}.{} (confidence={}, sources={})",
+            log.info("[Sidekick] relation demoted: {}.{} → {}.{} (confidence={}, sources={})",
                     r.getSourceTable(), r.getSourceColumn(),
                     r.getTargetTable(), r.getTargetColumn(), r.getConfidence(), r.getSources());
         }
+    }
+
+    /**
+     * 结果区 👍/👎。按 SQL 提取 JOIN，对每条关系加减分。
+     *
+     * @return 受影响的关系数
+     */
+    public int recordFeedback(String datasourceId, String sessionId, String messageId,
+                              String sql, boolean useful) {
+        if (!StringUtils.hasText(datasourceId) || !StringUtils.hasText(sql)) {
+            throw new IllegalArgumentException("datasourceId 与 sql 不能为空");
+        }
+        List<RelationPair> pairs = joinExtractor.extract(sql);
+        if (pairs.isEmpty()) {
+            return 0;
+        }
+        int delta = useful
+                ? relationConfigService.getInt(RelationConfigService.KEY_SCORE_LIKED)
+                : relationConfigService.getInt(RelationConfigService.KEY_SCORE_DISLIKED);
+        String tag = useful ? "LIKED" : "DISLIKED";
+        String ds = datasourceId.trim();
+        String sid = StringUtils.hasText(sessionId) ? sessionId.trim() : null;
+        String mid = StringUtils.hasText(messageId) ? messageId.trim() : null;
+        String now = TS.format(Instant.now());
+        int touched = 0;
+        try (Connection conn = sqliteInitializer.open()) {
+            for (RelationPair pair : pairs) {
+                if (applyFeedback(conn, ds, pair, delta, tag, now, sid, mid)) {
+                    touched++;
+                }
+            }
+        } catch (IllegalArgumentException | IllegalStateException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new IllegalStateException("写入关系反馈失败: " + ex.getMessage(), ex);
+        }
+        return touched;
+    }
+
+    private boolean applyFeedback(Connection conn, String ds, RelationPair pair, int delta, String tag,
+                                  String now, String sessionId, String messageId) throws Exception {
+        RelationUsage existing = findByPair(conn, ds, pair);
+        if (existing != null && RelationUsage.STATUS_REJECTED.equals(existing.getStatus())) {
+            return false;
+        }
+        RelationUsage row;
+        if (existing == null) {
+            row = new RelationUsage();
+            row.setId(UUID.randomUUID().toString());
+            row.setDatasourceId(ds);
+            row.setSourceTable(pair.sourceTable());
+            row.setSourceColumn(pair.sourceColumn());
+            row.setTargetTable(pair.targetTable());
+            row.setTargetColumn(pair.targetColumn());
+            row.setHitCount(0);
+            row.setConfidence(delta);
+            row.setStatus(RelationUsage.STATUS_PENDING);
+            row.setSources(tag);
+            row.setFirstSeenAt(now);
+            row.setLastUsedAt(now);
+            insertRow(conn, row);
+        } else {
+            row = existing;
+            row.setConfidence(row.getConfidence() + delta);
+            row.setSources(appendSource(row.getSources(), tag));
+            row.setLastUsedAt(now);
+            updateRow(conn, row);
+        }
+        writeLog(conn, row.getId(), sessionId, messageId, delta, tag);
+        if ("DISLIKED".equals(tag)) {
+            int streak = consecutiveDislikes(conn, row.getId());
+            if (streak >= relationConfigService.maxConsecutiveDislikes()) {
+                row.setStatus(RelationUsage.STATUS_REJECTED);
+                row.setConfidence(relationConfigService.getInt(RelationConfigService.KEY_SCORE_REJECTED));
+                updateRow(conn, row);
+                return true;
+            }
+            demoteIfNeeded(conn, row);
+        } else {
+            promoteIfNeeded(conn, row);
+        }
+        return true;
+    }
+
+    private int consecutiveDislikes(Connection conn, String relationId) throws Exception {
+        String sql = """
+                SELECT source FROM relation_usage_log
+                WHERE relation_id = ?
+                ORDER BY created_at DESC, rowid DESC
+                LIMIT 20
+                """;
+        int streak = 0;
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, relationId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String source = rs.getString("source");
+                    if ("DISLIKED".equalsIgnoreCase(source == null ? "" : source.trim())) {
+                        streak++;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        return streak;
     }
 
     private int scoreFor(UsageContext ctx) {

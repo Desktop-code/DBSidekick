@@ -10,6 +10,8 @@ public class MessageDetail {
     private String sqlStatus;
     private String resultJson;
     private String reasoningJson;
+    /** USEFUL / USELESS，结果区反馈；未反馈时为空。 */
+    private String userFeedback;
     private String createdAt;
 
     public String getId() {
@@ -74,6 +76,14 @@ public class MessageDetail {
 
     public void setReasoningJson(String reasoningJson) {
         this.reasoningJson = reasoningJson;
+    }
+
+    public String getUserFeedback() {
+        return userFeedback;
+    }
+
+    public void setUserFeedback(String userFeedback) {
+        this.userFeedback = userFeedback;
     }
 
     public String getCreatedAt() {

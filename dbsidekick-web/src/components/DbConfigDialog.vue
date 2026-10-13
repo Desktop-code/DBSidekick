@@ -212,9 +212,9 @@ function onClosed() {
   font-size: 13px;
 }
 .test-msg.ok {
-  color: #67c23a;
+  color: var(--sk-success);
 }
 .test-msg.fail {
-  color: #f56c6c;
+  color: var(--sk-danger);
 }
 </style>

@@ -185,6 +185,7 @@ import { executeSql, explainPlan } from '../../api/sql'
 import { explainSql, optimizeSql } from '../../api/text2sql'
 import { saveScript } from '../../api/script'
 import { useAppStore } from '../../stores/app'
+import { useThemeStore } from '../../stores/theme'
 
 self.MonacoEnvironment = {
   getWorker() {
@@ -199,6 +200,7 @@ const props = defineProps({
 })
 
 const appStore = useAppStore()
+const themeStore = useThemeStore()
 
 /** 结果表分页：超过此数量才显示分页，每页条数（与 AI 对话一致） */
 const resultPageSize = ref(10)
@@ -241,31 +243,32 @@ function ensureSqlTheme() {
     base: 'vs',
     inherit: true,
     rules: [
-      { token: 'keyword.sql', foreground: '0000CC', fontStyle: 'bold' },
-      { token: 'keyword.block.sql', foreground: '0000CC', fontStyle: 'bold' },
-      { token: 'keyword.try.sql', foreground: '0000CC', fontStyle: 'bold' },
-      { token: 'keyword.catch.sql', foreground: '0000CC', fontStyle: 'bold' },
-      { token: 'keyword.choice.sql', foreground: '0000CC', fontStyle: 'bold' },
-      { token: 'operator.sql', foreground: '0000CC', fontStyle: 'bold' },
+      { token: 'keyword.sql', foreground: 'CF222E' },
+      { token: 'keyword.block.sql', foreground: 'CF222E' },
+      { token: 'keyword.try.sql', foreground: 'CF222E' },
+      { token: 'keyword.catch.sql', foreground: 'CF222E' },
+      { token: 'keyword.choice.sql', foreground: 'CF222E' },
+      { token: 'operator.sql', foreground: 'CF222E' },
       { token: 'predefined.sql', foreground: 'A3157A' },
-      { token: 'string.sql', foreground: '067D17' },
-      { token: 'number.sql', foreground: 'C05000' },
-      { token: 'comment.sql', foreground: '808080', fontStyle: 'italic' },
-      { token: 'comment.quote.sql', foreground: '808080', fontStyle: 'italic' },
-      { token: 'identifier.sql', foreground: '1F1F1F' },
-      { token: 'identifier.quote.sql', foreground: '1F1F1F' },
-      { token: 'delimiter.sql', foreground: '303133' },
-      { token: 'delimiter.parenthesis.sql', foreground: '303133' },
-      { token: 'delimiter.square.sql', foreground: '303133' }
+      { token: 'string.sql', foreground: '0A3069' },
+      { token: 'number.sql', foreground: '0550AE' },
+      { token: 'comment.sql', foreground: '6E7781', fontStyle: 'italic' },
+      { token: 'comment.quote.sql', foreground: '6E7781', fontStyle: 'italic' },
+      { token: 'identifier.sql', foreground: '1F2328' },
+      { token: 'identifier.quote.sql', foreground: '1F2328' },
+      { token: 'delimiter.sql', foreground: '1F2328' },
+      { token: 'delimiter.parenthesis.sql', foreground: '1F2328' },
+      { token: 'delimiter.square.sql', foreground: '1F2328' }
     ],
     colors: {
       'editor.background': '#FFFFFF',
-      'editor.foreground': '#1F1F1F',
-      'editorLineNumber.foreground': '#B0B4BA',
-      'editorLineNumber.activeForeground': '#606266',
+      'editor.foreground': '#1F2328',
+      'editorLineNumber.foreground': '#94A3B8',
+      'editorLineNumber.activeForeground': '#64748B',
       'editor.selectionBackground': '#D6E8FF',
-      'editor.lineHighlightBackground': '#F7F9FC',
-      'editorCursor.foreground': '#303133'
+      'editor.lineHighlightBackground': '#EFF6FF',
+      'editor.lineHighlightBorder': '#00000000',
+      'editorCursor.foreground': '#1F2328'
     }
   })
   themeReady = true
@@ -368,7 +371,7 @@ function initEditor() {
   editor = monaco.editor.create(editorHost.value, {
     value: sqlText.value || '',
     language: 'sql',
-    theme: 'navicat-sql',
+    theme: themeStore.resolvedTheme === 'dark' ? 'vs-dark' : 'navicat-sql',
     automaticLayout: true,
     minimap: { enabled: false },
     fontSize: 13,
@@ -384,6 +387,14 @@ function initEditor() {
   })
   resizeObs.observe(editorHost.value)
 }
+
+watch(
+  () => themeStore.resolvedTheme,
+  (mode) => {
+    ensureSqlTheme()
+    monaco.editor.setTheme(mode === 'dark' ? 'vs-dark' : 'navicat-sql')
+  }
+)
 
 function getTargetSql() {
   if (!editor) return (sqlText.value || '').trim()
@@ -742,7 +753,7 @@ watch(
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: #fff;
+  background: var(--sk-bg-elevated);
 }
 .toolbar,
 .runbar {
@@ -750,7 +761,7 @@ watch(
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--sk-border);
   flex-shrink: 0;
   flex-wrap: wrap;
 }
@@ -758,12 +769,14 @@ watch(
   margin-left: 4px;
 }
 .runbar {
-  background: #fafafa;
+  background: var(--sk-bg);
 }
 .monaco-host {
   flex: 1;
   min-height: 160px;
-  border-bottom: 1px solid #ebeef5;
+  border-bottom: 1px solid var(--sk-border);
+  border-radius: 6px;
+  overflow: hidden;
 }
 .result-area {
   height: 280px;
@@ -772,7 +785,7 @@ watch(
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-top: 1px solid #ebeef5;
+  border-top: 1px solid var(--sk-border);
 }
 .result-tabs {
   height: 100%;
@@ -804,23 +817,23 @@ watch(
 }
 .result-meta {
   font-size: 12px;
-  color: #909399;
+  color: var(--sk-text-tertiary);
   margin-bottom: 6px;
 }
 .empty-hint {
   font-size: 12px;
-  color: #909399;
+  color: var(--sk-text-tertiary);
   padding: 16px 4px;
 }
 .msg {
   font-size: 13px;
   padding: 10px;
   white-space: pre-wrap;
-  color: #303133;
+  color: var(--sk-text-primary);
 }
 .msg.err {
-  color: #f56c6c;
-  background: #fef0f0;
+  color: var(--sk-danger);
+  background: var(--sk-danger-bg);
   border-radius: 6px;
 }
 .script-steps-list {
@@ -828,7 +841,7 @@ watch(
 }
 .script-step-row {
   padding: 8px 0;
-  border-bottom: 1px dashed #ebeef5;
+  border-bottom: 1px dashed var(--sk-border);
   font-size: 12px;
 }
 .script-step-row:last-child {
@@ -837,19 +850,19 @@ watch(
 .script-step-row .idx {
   font-weight: 600;
   margin-right: 6px;
-  color: #409eff;
+  color: var(--sk-primary);
 }
 .script-step-row .meta {
-  color: #909399;
+  color: var(--sk-text-tertiary);
 }
 .script-step-row .step-err {
-  color: #f56c6c;
+  color: var(--sk-danger);
 }
 .script-step-row .step-sql {
   margin: 6px 0 0;
   padding: 8px 10px;
-  background: #fff;
-  border: 1px solid #ebeef5;
+  background: var(--sk-bg-elevated);
+  border: 1px solid var(--sk-border);
   border-radius: 4px;
   white-space: pre-wrap;
   word-break: break-all;
@@ -857,23 +870,23 @@ watch(
   overflow: auto;
   font-size: 12px;
   font-family: Consolas, Monaco, monospace;
-  color: #1f1f1f;
+  color: var(--sk-inline-sql-fg);
 }
 .step-sql :deep(.tok-kw) {
-  color: #0000cc;
+  color: var(--sk-inline-kw);
   font-weight: 700;
 }
 .step-sql :deep(.tok-fn) {
-  color: #a3157a;
+  color: var(--sk-inline-fn);
 }
 .step-sql :deep(.tok-str) {
-  color: #067d17;
+  color: var(--sk-inline-str);
 }
 .step-sql :deep(.tok-num) {
-  color: #c05000;
+  color: var(--sk-inline-num);
 }
 .step-sql :deep(.tok-cmt) {
-  color: #808080;
+  color: var(--sk-inline-cmt);
   font-style: italic;
 }
 .plan-collapse {
@@ -885,7 +898,7 @@ watch(
   overflow: auto;
   font-size: 12px;
   white-space: pre-wrap;
-  background: #f5f7fa;
+  background: var(--sk-hover-bg);
   padding: 8px;
   border-radius: 4px;
 }
@@ -894,13 +907,13 @@ watch(
 }
 .opt-label {
   font-size: 12px;
-  color: #909399;
+  color: var(--sk-text-tertiary);
   margin-bottom: 4px;
 }
 .opt-sql {
   margin: 0;
   padding: 10px;
-  background: #f5f7fa;
+  background: var(--sk-hover-bg);
   border-radius: 6px;
   font-size: 12px;
   white-space: pre-wrap;
@@ -908,18 +921,18 @@ watch(
   overflow: auto;
 }
 .opt-sql.muted {
-  color: #606266;
+  color: var(--sk-text-secondary);
 }
 .opt-changes {
   margin: 0;
   padding-left: 18px;
   font-size: 13px;
-  color: #303133;
+  color: var(--sk-text-primary);
 }
 .explain-body {
   font-size: 14px;
   line-height: 1.6;
   white-space: pre-wrap;
-  color: #303133;
+  color: var(--sk-text-primary);
 }
 </style>

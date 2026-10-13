@@ -196,7 +196,7 @@ public class Text2SqlStreamController {
                         send(emitter, stopped, SseEvent.phase(phase, content, elapsedMs), streamStartMs);
                     });
 
-            String savedId = persistTurn(sessionId, datasourceId, dbName, preferredTitle, question, result);
+            PersistTurn saved = persistTurn(sessionId, datasourceId, dbName, preferredTitle, question, result);
 
             if (stopped.get()) {
                 return;
@@ -207,7 +207,8 @@ public class Text2SqlStreamController {
                 String msg = StringUtils.hasText(result.getError()) ? result.getError() : "查询失败";
                 send(emitter, stopped, SseEvent.error(msg), streamStartMs);
             }
-            send(emitter, stopped, SseEvent.done(savedId), streamStartMs);
+            send(emitter, stopped, SseEvent.done(saved == null ? null : saved.sessionId(),
+                    saved == null ? null : saved.messageId()), streamStartMs);
             emitter.complete();
             log.info("[Sidekick][SSE] done success={} elapsedMs={}", result.isSuccess(), result.getElapsedMs());
         } catch (IllegalStateException disconnected) {
@@ -237,8 +238,11 @@ public class Text2SqlStreamController {
         }
     }
 
-    private String persistTurn(String sessionId, String datasourceId, String dbName, String preferredTitle,
-                                String question, Text2SqlResult result) {
+    private record PersistTurn(String sessionId, String messageId) {
+    }
+
+    private PersistTurn persistTurn(String sessionId, String datasourceId, String dbName, String preferredTitle,
+                                    String question, Text2SqlResult result) {
         try {
             String sid = sessionId;
             boolean created = false;
@@ -279,10 +283,13 @@ public class Text2SqlStreamController {
             assistant.setReasoningJson(toReasoningJson(result.getReasoningSteps()));
             chatSessionService.appendMessage(sid, assistant);
             chatSessionService.touchSession(sid);
-            return sid;
+            return new PersistTurn(sid, assistant.getId());
         } catch (Exception ex) {
             log.warn("[Sidekick][SSE] persist turn failed: {}", ex.getMessage());
-            return StringUtils.hasText(sessionId) ? sessionId : null;
+            if (StringUtils.hasText(sessionId)) {
+                return new PersistTurn(sessionId, null);
+            }
+            return null;
         }
     }
 
