@@ -955,7 +955,14 @@ function onCtxRelations() {
   const data = ctx.data
   closeCtx()
   if (!data?.datasourceId) return
-  tabsStore.openRelationManage({ datasourceId: data.datasourceId })
+  const db =
+    data.nodeType === 'database'
+      ? data.database || data.label
+      : appStore.currentDatabase || undefined
+  tabsStore.openRelationManage({
+    datasourceId: data.datasourceId,
+    dbName: db || undefined
+  })
 }
 
 async function onCtxInferDatabase() {

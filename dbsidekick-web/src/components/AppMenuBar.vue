@@ -93,7 +93,7 @@
 
     <el-dialog v-model="aboutVisible" title="关于 DBSidekick" width="440px">
       <div class="about">
-        <p><b>版本</b> 0.0.1</p>
+        <p><b>版本</b> {{ appVersion }}</p>
         <p><b>作者</b> DBSidekick Team</p>
         <p><b>技术栈</b> Spring Boot 3 · Vue 3 · JavaFX · Milvus · ONNX Embedding · DeepSeek</p>
       </div>
@@ -108,6 +108,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { InfoFilled } from '@element-plus/icons-vue'
+import request from '../api/request'
 import { backupData, chooseSystemFile, openDataDir, openLogDir, resetData, restoreData } from '../api/system'
 import { generateAliases, inferRelations } from '../api/schema'
 import { useAppStore } from '../stores/app'
@@ -118,6 +119,8 @@ const appStore = useAppStore()
 const tabsStore = useTabsStore()
 const themeStore = useThemeStore()
 const aboutVisible = ref(false)
+/** 与后端 /api/health（来自 pom version）保持一致 */
+const appVersion = ref('0.1.0')
 const health = computed(() => appStore.health)
 const detail = computed(() => appStore.healthDetail)
 let healthTimer = null
@@ -177,7 +180,7 @@ function onData(cmd) {
       ElMessage.warning('请先选择数据源')
       return
     }
-    tabsStore.openRelationManage({ datasourceId: id })
+    tabsStore.openRelationManage({ datasourceId: id, dbName: appStore.currentDatabase || undefined })
   } else if (cmd === 'aliases') {
     onAliases()
   } else if (cmd === 'infer') {
@@ -341,6 +344,18 @@ onUnmounted(() => {
   if (healthTimer) clearInterval(healthTimer)
 })
 
+async function openAbout() {
+  aboutVisible.value = true
+  try {
+    const res = await request.get('/health')
+    if (res?.version) {
+      appVersion.value = String(res.version).trim()
+    }
+  } catch {
+    // 回退默认 0.1.0
+  }
+}
+
 function onHelp(cmd) {
   if (cmd === 'docs') {
     ElMessageBox.alert(
@@ -349,7 +364,7 @@ function onHelp(cmd) {
       { confirmButtonText: '知道了' }
     )
   } else if (cmd === 'about') {
-    aboutVisible.value = true
+    openAbout()
   } else if (cmd === 'openLog') {
     onOpenLogDir()
   }

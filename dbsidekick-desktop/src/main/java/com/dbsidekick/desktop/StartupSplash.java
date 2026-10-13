@@ -107,7 +107,7 @@ final class StartupSplash {
             if (firstLaunch) {
                 bottom.add(tip(base));
             }
-            JLabel version = new JLabel("v0.0.1  ");
+            JLabel version = new JLabel(AppVersion.displayLabel() + "  ");
             version.setFont(base.deriveFont(11f));
             version.setForeground(MUTED);
             version.setAlignmentX(1f);
