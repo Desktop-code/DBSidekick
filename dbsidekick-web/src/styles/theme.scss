@@ -1,15 +1,48 @@
 :root {
-  --sk-primary: #3b82f6;
-  --sk-primary-light: #eff6ff;
   --sk-bg: #f8fafc;
-  --sk-card: #ffffff;
+  --sk-bg-elevated: #ffffff;
+  --sk-bg-sidebar: #fafbfc;
   --sk-border: #e2e8f0;
+  --sk-border-strong: #cbd5e1;
   --sk-text-primary: #1e293b;
   --sk-text-secondary: #64748b;
   --sk-text-tertiary: #94a3b8;
+  --sk-text-strong: #475569;
+  --sk-primary: #3b82f6;
+  --sk-primary-strong: #2563eb;
+  --sk-on-primary: #ffffff;
+  --sk-primary-light: #eff6ff;
+  --sk-hover-bg: #f1f5f9;
+  --sk-active-bg: #eff6ff;
+  --sk-code-bg: #1e1e1e;
+  --sk-code-fg: #d4d4d4;
+  --sk-code-muted: #858585;
+  --sk-shadow: rgba(0, 0, 0, 0.04);
+  --sk-shadow-pop: rgba(0, 0, 0, 0.12);
+  --sk-card: var(--sk-bg-elevated);
   --sk-success: #10b981;
   --sk-warning: #f59e0b;
   --sk-danger: #ef4444;
+  --sk-danger-bg: #fef0f0;
+  --sk-warning-bg: #fffbeb;
+  --sk-success-bg: #ecfdf5;
+  --sk-success-text: #047857;
+  --sk-warning-text: #b45309;
+  --sk-slow-text: #c2410c;
+  --sk-slow-bg: #fff7ed;
+  --sk-postgres: #1e40af;
+  --sk-chip-vector-bg: #f5f3ff;
+  --sk-chip-vector-fg: #8b5cf6;
+  --sk-chip-db-bg: #ecfdf5;
+  --sk-chip-db-fg: #10b981;
+  --sk-inline-sql-bg: #ffffff;
+  --sk-inline-sql-fg: #1f2328;
+  --sk-inline-kw: #cf222e;
+  --sk-inline-str: #0a3069;
+  --sk-inline-num: #0550ae;
+  --sk-inline-cmt: #6e7781;
+  --sk-inline-fn: #a3157a;
+  color-scheme: light;
 
   --el-color-primary: #3b82f6;
   --el-color-primary-light-3: #93c5fd;
@@ -18,15 +51,83 @@
   --el-color-primary-light-8: #eff6ff;
   --el-color-primary-light-9: #f8fafc;
   --el-color-primary-dark-2: #2563eb;
-  --el-border-color: #e2e8f0;
-  --el-border-color-light: #e2e8f0;
+  --el-border-color: var(--sk-border);
+  --el-border-color-light: var(--sk-border);
   --el-border-color-lighter: #f1f5f9;
-  --el-text-color-primary: #1e293b;
-  --el-text-color-regular: #64748b;
-  --el-text-color-secondary: #94a3b8;
-  --el-bg-color: #ffffff;
-  --el-bg-color-page: #f8fafc;
-  --el-fill-color-blank: #ffffff;
+  --el-text-color-primary: var(--sk-text-primary);
+  --el-text-color-regular: var(--sk-text-secondary);
+  --el-text-color-secondary: var(--sk-text-tertiary);
+  --el-bg-color: var(--sk-bg-elevated);
+  --el-bg-color-page: var(--sk-bg);
+  --el-fill-color-blank: var(--sk-bg-elevated);
+  --el-fill-color-light: var(--sk-hover-bg);
+}
+
+html.dark {
+  --sk-bg: #0f172a;
+  --sk-bg-elevated: #1e293b;
+  --sk-bg-sidebar: #0f172a;
+  --sk-border: #334155;
+  --sk-border-strong: #475569;
+  --sk-text-primary: #f1f5f9;
+  --sk-text-secondary: #94a3b8;
+  --sk-text-tertiary: #64748b;
+  --sk-text-strong: #cbd5e1;
+  --sk-primary: #60a5fa;
+  --sk-primary-strong: #93c5fd;
+  --sk-on-primary: #0f172a;
+  --sk-primary-light: rgba(30, 58, 138, 0.3);
+  --sk-hover-bg: #1e293b;
+  --sk-active-bg: rgba(30, 58, 138, 0.3);
+  --sk-code-bg: #0d1117;
+  --sk-code-fg: #e6edf3;
+  --sk-code-muted: #858585;
+  --sk-shadow: rgba(0, 0, 0, 0.3);
+  --sk-shadow-pop: rgba(0, 0, 0, 0.45);
+  --sk-danger-bg: rgba(239, 68, 68, 0.16);
+  --sk-warning-bg: rgba(245, 158, 11, 0.16);
+  --sk-success-bg: rgba(16, 185, 129, 0.16);
+  --sk-success-text: #6ee7b7;
+  --sk-warning-text: #fdba74;
+  --sk-slow-text: #fdba74;
+  --sk-slow-bg: rgba(249, 115, 22, 0.16);
+  --sk-postgres: #93c5fd;
+  --sk-chip-vector-bg: rgba(139, 92, 246, 0.22);
+  --sk-chip-vector-fg: #c4b5fd;
+  --sk-chip-db-bg: rgba(16, 185, 129, 0.18);
+  --sk-chip-db-fg: #6ee7b7;
+  --sk-inline-sql-bg: #0d1117;
+  --sk-inline-sql-fg: #e6edf3;
+  --sk-inline-kw: #ff7b72;
+  --sk-inline-str: #a5d6ff;
+  --sk-inline-num: #79c0ff;
+  --sk-inline-cmt: #8b949e;
+  --sk-inline-fn: #d2a8ff;
+  color-scheme: dark;
+
+  --el-bg-color: var(--sk-bg-elevated);
+  --el-bg-color-page: var(--sk-bg);
+  --el-bg-color-overlay: var(--sk-bg-elevated);
+  --el-text-color-primary: var(--sk-text-primary);
+  --el-text-color-regular: var(--sk-text-secondary);
+  --el-text-color-secondary: var(--sk-text-tertiary);
+  --el-text-color-placeholder: var(--sk-text-tertiary);
+  --el-border-color: var(--sk-border);
+  --el-border-color-light: var(--sk-border);
+  --el-border-color-lighter: var(--sk-border);
+  --el-border-color-extra-light: var(--sk-border);
+  --el-fill-color-light: var(--sk-hover-bg);
+  --el-fill-color-lighter: var(--sk-bg);
+  --el-fill-color-blank: var(--sk-bg-elevated);
+  --el-fill-color: #334155;
+  --el-mask-color: rgba(0, 0, 0, 0.55);
+  --el-color-primary: #60a5fa;
+  --el-color-primary-light-3: #93c5fd;
+  --el-color-primary-light-5: #60a5fa;
+  --el-color-primary-light-7: #3b82f6;
+  --el-color-primary-light-8: #1e3a8a;
+  --el-color-primary-light-9: #1e293b;
+  --el-color-primary-dark-2: #bfdbfe;
 }
 
 html,
@@ -34,6 +135,32 @@ body,
 #app {
   background: var(--sk-bg);
   color: var(--sk-text-primary);
+}
+
+html.theme-ready :where(
+  body,
+  #app,
+  .menu-bar,
+  .status-bar,
+  .main-view,
+  .side,
+  .side-body,
+  .center,
+  .block,
+  .ds-panel,
+  .empty,
+  .empty-state,
+  .tab-container,
+  .query-editor,
+  .sql-panel,
+  .bubble,
+  .ai-bubble,
+  .user-bubble,
+  .section,
+  .composer,
+  .result-area
+) {
+  transition: background-color 200ms ease, color 200ms ease, border-color 200ms ease;
 }
 
 .el-button:not(.is-text):not(.is-link) {

@@ -232,8 +232,8 @@ public class ChatSessionService {
         try (Connection conn = sqliteInitializer.open();
              PreparedStatement ps = conn.prepareStatement("""
                      INSERT INTO chat_message(id, session_id, role, content, sql_text, sql_status,
-                       result_json, reasoning_json, created_at)
-                     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       result_json, reasoning_json, user_feedback, created_at)
+                     VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      """)) {
             ps.setString(1, id);
             ps.setString(2, sessionId.trim());
@@ -243,7 +243,8 @@ public class ChatSessionService {
             ps.setString(6, msg.getSqlStatus());
             ps.setString(7, msg.getResultJson());
             ps.setString(8, msg.getReasoningJson());
-            ps.setString(9, now);
+            ps.setString(9, msg.getUserFeedback());
+            ps.setString(10, now);
             ps.executeUpdate();
         }
         msg.setId(id);
@@ -295,7 +296,8 @@ public class ChatSessionService {
         if (limit != null && limit > 0) {
             // SQLite: 先按时间倒序取 limit，再反转成 ASC
             sql = """
-                    SELECT id, session_id, role, content, sql_text, sql_status, result_json, reasoning_json, created_at
+                    SELECT id, session_id, role, content, sql_text, sql_status, result_json, reasoning_json,
+                           user_feedback, created_at
                     FROM chat_message
                     WHERE session_id = ?
                     ORDER BY created_at DESC, rowid DESC
@@ -303,7 +305,8 @@ public class ChatSessionService {
                     """;
         } else {
             sql = """
-                    SELECT id, session_id, role, content, sql_text, sql_status, result_json, reasoning_json, created_at
+                    SELECT id, session_id, role, content, sql_text, sql_status, result_json, reasoning_json,
+                           user_feedback, created_at
                     FROM chat_message
                     WHERE session_id = ?
                     ORDER BY created_at ASC, rowid ASC
@@ -337,8 +340,52 @@ public class ChatSessionService {
         m.setSqlStatus(rs.getString("sql_status"));
         m.setResultJson(rs.getString("result_json"));
         m.setReasoningJson(rs.getString("reasoning_json"));
+        try {
+            m.setUserFeedback(rs.getString("user_feedback"));
+        } catch (Exception ignored) {
+            m.setUserFeedback(null);
+        }
         m.setCreatedAt(rs.getString("created_at"));
         return m;
+    }
+
+    public MessageDetail getMessage(String sessionId, String messageId) throws Exception {
+        if (!StringUtils.hasText(sessionId) || !StringUtils.hasText(messageId)) {
+            return null;
+        }
+        try (Connection conn = sqliteInitializer.open();
+             PreparedStatement ps = conn.prepareStatement("""
+                     SELECT id, session_id, role, content, sql_text, sql_status, result_json, reasoning_json,
+                            user_feedback, created_at
+                     FROM chat_message
+                     WHERE session_id = ? AND id = ?
+                     """)) {
+            ps.setString(1, sessionId.trim());
+            ps.setString(2, messageId.trim());
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? mapMessage(rs) : null;
+            }
+        }
+    }
+
+    public void setMessageFeedback(String sessionId, String messageId, String feedback) throws Exception {
+        if (!StringUtils.hasText(sessionId) || !StringUtils.hasText(messageId)) {
+            throw new IllegalArgumentException("sessionId 与 messageId 不能为空");
+        }
+        String value = feedback == null ? null : feedback.trim().toUpperCase();
+        try (Connection conn = sqliteInitializer.open();
+             PreparedStatement ps = conn.prepareStatement("""
+                     UPDATE chat_message SET user_feedback = ?
+                     WHERE session_id = ? AND id = ?
+                     """)) {
+            ps.setString(1, value);
+            ps.setString(2, sessionId.trim());
+            ps.setString(3, messageId.trim());
+            int n = ps.executeUpdate();
+            if (n == 0) {
+                throw new IllegalArgumentException("消息不存在");
+            }
+        }
     }
 
     /**

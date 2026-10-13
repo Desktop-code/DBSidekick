@@ -179,7 +179,7 @@ async function onFinish() {
 <style scoped>
 .lead {
   margin: 0 0 16px;
-  color: #606266;
+  color: var(--sk-text-secondary);
   line-height: 1.6;
   font-size: 13px;
 }
@@ -189,7 +189,7 @@ async function onFinish() {
 .label {
   margin-bottom: 6px;
   font-size: 13px;
-  color: #303133;
+  color: var(--sk-text-primary);
 }
 .row {
   display: flex;
@@ -207,14 +207,14 @@ async function onFinish() {
   line-height: 1.4;
 }
 .msg.ok {
-  color: #1f8a4c;
+  color: var(--sk-success);
 }
 .msg.fail {
-  color: #c45656;
+  color: var(--sk-danger);
 }
 .quiet {
   margin: 6px 0 0;
   font-size: 12px;
-  color: #909399;
+  color: var(--sk-text-tertiary);
 }
 </style>

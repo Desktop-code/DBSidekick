@@ -198,16 +198,16 @@ defineExpose({ openCreate, openEdit })
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #c0c4cc;
+  background: var(--sk-text-tertiary);
   display: inline-block;
 }
 .dot.up {
-  background: #67c23a;
+  background: var(--sk-success);
 }
 .dot.down {
-  background: #f56c6c;
+  background: var(--sk-danger);
 }
 .dot.unknown {
-  background: #c0c4cc;
+  background: var(--sk-text-tertiary);
 }
 </style>

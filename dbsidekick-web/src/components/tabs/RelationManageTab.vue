@@ -27,7 +27,38 @@
     </div>
 
     <div class="table-wrap">
-      <el-table :data="items" size="small" border stripe height="100%" v-loading="loading">
+      <el-table
+        :data="items"
+        size="small"
+        border
+        stripe
+        height="100%"
+        v-loading="loading"
+        row-key="id"
+        @expand-change="onExpand"
+      >
+        <el-table-column type="expand">
+          <template #default="{ row }">
+            <div class="source-detail">
+              <div class="source-detail-title">来源明细（解释置信度从哪来）</div>
+              <div v-if="!(row.sourceDetails || []).length" class="source-empty">暂无来源记录</div>
+              <ul v-else class="source-list">
+                <li v-for="(s, i) in row.sourceDetails" :key="i">
+                  <span class="src-tag" :class="{ strong: s.strong }">{{ s.source }}</span>
+                  <span class="src-label">{{ s.label }}</span>
+                  <span class="src-score" :class="{ neg: Number(s.score) < 0 }">
+                    {{ formatScore(s.score) }}
+                  </span>
+                  <span v-if="s.strong" class="src-strong">强信号</span>
+                </li>
+              </ul>
+              <div class="source-hint">
+                当前置信度 {{ row.confidence ?? 0 }} ·
+                {{ row.strongSignal ? '已含强信号，可晋级' : '尚无强信号，仅靠执行成功不会确认' }}
+              </div>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="源表.字段" min-width="180">
           <template #default="{ row }">{{ row.sourceTable }}.{{ row.sourceColumn }}</template>
         </el-table-column>
@@ -37,9 +68,9 @@
         <el-table-column label="目标表.字段" min-width="180">
           <template #default="{ row }">{{ row.targetTable }}.{{ row.targetColumn }}</template>
         </el-table-column>
-        <el-table-column label="状态" width="100" align="center">
+        <el-table-column label="状态" width="120" align="center">
           <template #default="{ row }">
-            <el-tag size="small" :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+            <el-tag size="small" :type="kindType(row)">{{ kindLabel(row) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="置信度" width="160">
@@ -51,7 +82,11 @@
             />
           </template>
         </el-table-column>
-        <el-table-column prop="sources" label="来源" min-width="140" show-overflow-tooltip />
+        <el-table-column label="来源" min-width="160">
+          <template #default="{ row }">
+            <span class="sources-brief">{{ row.sources || '-' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="lastUsedAt" label="最后使用" width="160" />
         <el-table-column label="操作" width="140" fixed="right">
           <template #default="{ row }">
@@ -83,7 +118,7 @@
       <div class="cfg" v-loading="cfgLoading">
         <div class="cfg-row">
           <span>晋升阈值</span>
-          <el-slider v-model="form.threshold" :min="1" :max="10" show-input />
+          <el-slider v-model="form.threshold" :min="1" :max="20" show-input />
         </div>
         <div class="cfg-row">
           <span>执行成功</span>
@@ -92,6 +127,14 @@
         <div class="cfg-row">
           <span>结果有行</span>
           <el-input-number v-model="form.rowCount" :step="1" />
+        </div>
+        <div class="cfg-row">
+          <span>结果有用 👍</span>
+          <el-input-number v-model="form.liked" :step="1" />
+        </div>
+        <div class="cfg-row">
+          <span>结果没用 👎</span>
+          <el-input-number v-model="form.disliked" :step="1" />
         </div>
         <div class="cfg-row">
           <span>保存到脚本</span>
@@ -104,6 +147,18 @@
         <div class="cfg-row">
           <span>手工拒绝</span>
           <el-input-number v-model="form.rejected" :step="1" />
+        </div>
+        <div class="cfg-row">
+          <span>连续点踩降级次数</span>
+          <el-input-number v-model="form.maxDislikes" :min="1" :max="10" :step="1" />
+        </div>
+        <div class="cfg-row">
+          <span>推断来源阈值倍数</span>
+          <el-input-number v-model="form.inferredMul" :min="1" :max="5" :step="1" />
+        </div>
+        <div class="cfg-row">
+          <span>晋级需强信号</span>
+          <el-switch v-model="form.requireStrong" />
         </div>
         <div class="cfg-block">
           <span>排除字段名</span>
@@ -162,12 +217,17 @@ const savingCfg = ref(false)
 const excludedInput = ref('')
 const prefixInput = ref('')
 const form = reactive({
-  threshold: 3,
+  threshold: 6,
   sqlSuccess: 1,
   rowCount: 1,
+  liked: 3,
+  disliked: -5,
   saved: 5,
   confirmed: 10,
   rejected: -100,
+  maxDislikes: 3,
+  inferredMul: 2,
+  requireStrong: true,
   excluded: [],
   prefixes: []
 })
@@ -191,22 +251,36 @@ watch(
   }
 )
 
-function statusType(s) {
-  if (s === 'CONFIRMED') return 'success'
-  if (s === 'PENDING') return 'warning'
-  return 'info'
+/** CONFIRMED+强信号→已确认；CONFIRMED 无强信号→自动推断；其余按 status */
+function kindLabel(row) {
+  const kind = row?.displayKind || row?.status
+  if (kind === 'AUTO') return '自动推断'
+  if (kind === 'CONFIRMED' || row?.status === 'CONFIRMED') return '已确认'
+  if (kind === 'PENDING' || row?.status === 'PENDING') return '待审'
+  if (kind === 'REJECTED' || row?.status === 'REJECTED') return '已拒绝'
+  return kind || '-'
 }
 
-function statusLabel(s) {
-  if (s === 'CONFIRMED') return '已确认'
-  if (s === 'PENDING') return '待审'
-  if (s === 'REJECTED') return '已拒绝'
-  return s || '-'
+function kindType(row) {
+  const kind = row?.displayKind || row?.status
+  if (kind === 'AUTO') return 'warning'
+  if (kind === 'CONFIRMED' || row?.status === 'CONFIRMED') return 'success'
+  if (kind === 'PENDING' || row?.status === 'PENDING') return 'info'
+  return 'danger'
+}
+
+function formatScore(n) {
+  const v = Number(n) || 0
+  return v > 0 ? `+${v}` : String(v)
 }
 
 function barPercent(n) {
   const v = Number(n) || 0
   return Math.max(0, Math.min(100, Math.round((v / 20) * 100)))
+}
+
+function onExpand() {
+  /* expand 内容已随行数据下发 */
 }
 
 function onSearch() {
@@ -281,17 +355,29 @@ function splitCsv(raw) {
     .filter(Boolean)
 }
 
+function parseBool(v, fallback = true) {
+  if (v === true || v === false) return v
+  if (v == null || v === '') return fallback
+  const s = String(v).trim().toLowerCase()
+  return s === '1' || s === 'true' || s === 'yes'
+}
+
 async function openSettings() {
   settingsOpen.value = true
   cfgLoading.value = true
   try {
     const cfg = await getRelationConfig()
-    form.threshold = Number(cfg?.['confidence-threshold'] ?? 3)
+    form.threshold = Number(cfg?.['confidence-threshold'] ?? 6)
     form.sqlSuccess = Number(cfg?.['score.sql-success'] ?? 1)
     form.rowCount = Number(cfg?.['score.row-count-positive'] ?? 1)
+    form.liked = Number(cfg?.['score.user-liked'] ?? 3)
+    form.disliked = Number(cfg?.['score.user-disliked'] ?? -5)
     form.saved = Number(cfg?.['score.saved-to-script'] ?? 5)
     form.confirmed = Number(cfg?.['score.user-confirmed'] ?? 10)
     form.rejected = Number(cfg?.['score.user-rejected'] ?? -100)
+    form.maxDislikes = Number(cfg?.['max-consecutive-dislikes'] ?? 3)
+    form.inferredMul = Number(cfg?.['inferred-threshold-multiplier'] ?? 2)
+    form.requireStrong = parseBool(cfg?.['require-strong-signal'], true)
     form.excluded = splitCsv(cfg?.['excluded-column-names'])
     form.prefixes = splitCsv(cfg?.['temp-table-prefixes'])
   } catch {
@@ -325,9 +411,14 @@ async function saveConfig() {
       'confidence-threshold': String(form.threshold),
       'score.sql-success': String(form.sqlSuccess),
       'score.row-count-positive': String(form.rowCount),
+      'score.user-liked': String(form.liked),
+      'score.user-disliked': String(form.disliked),
       'score.saved-to-script': String(form.saved),
       'score.user-confirmed': String(form.confirmed),
       'score.user-rejected': String(form.rejected),
+      'max-consecutive-dislikes': String(form.maxDislikes),
+      'inferred-threshold-multiplier': String(form.inferredMul),
+      'require-strong-signal': form.requireStrong ? 'true' : 'false',
       'excluded-column-names': form.excluded.join(','),
       'temp-table-prefixes': form.prefixes.join(',')
     })
@@ -411,5 +502,66 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+.source-detail {
+  padding: 8px 16px 12px 48px;
+  font-size: 12px;
+  color: var(--el-text-color-regular);
+}
+.source-detail-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.source-empty {
+  color: var(--el-text-color-secondary);
+}
+.source-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.source-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.src-tag {
+  display: inline-block;
+  min-width: 72px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--el-fill-color);
+  font-family: Consolas, Monaco, monospace;
+  font-size: 11px;
+}
+.src-tag.strong {
+  background: var(--el-color-success-light-9);
+  color: var(--el-color-success);
+}
+.src-label {
+  color: var(--el-text-color-secondary);
+}
+.src-score {
+  font-weight: 600;
+  color: var(--el-color-success);
+  min-width: 36px;
+}
+.src-score.neg {
+  color: var(--el-color-danger);
+}
+.src-strong {
+  color: var(--el-color-success);
+  font-size: 11px;
+}
+.source-hint {
+  margin-top: 8px;
+  color: var(--el-text-color-secondary);
+}
+.sources-brief {
+  font-family: Consolas, Monaco, monospace;
+  font-size: 12px;
 }
 </style>

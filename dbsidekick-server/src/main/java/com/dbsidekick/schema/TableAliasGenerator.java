@@ -52,6 +52,10 @@ public class TableAliasGenerator {
     }
 
     public GenReport generateAll(String datasourceId, boolean overwrite) {
+        return generateAll(datasourceId, overwrite, null);
+    }
+
+    public GenReport generateAll(String datasourceId, boolean overwrite, String database) {
         if (!StringUtils.hasText(datasourceId)) {
             throw new IllegalArgumentException("datasourceId 不能为空");
         }
@@ -60,7 +64,8 @@ public class TableAliasGenerator {
         }
         long start = System.currentTimeMillis();
         String ds = datasourceId.trim();
-        List<TableRow> tables = loadTables(ds);
+        String db = StringUtils.hasText(database) ? database.trim() : null;
+        List<TableRow> tables = loadTables(ds, db);
         int generated = 0;
         int skipped = 0;
         int failed = 0;
@@ -101,17 +106,21 @@ public class TableAliasGenerator {
         return new GenReport(generated, skipped, failed, elapsed);
     }
 
-    private List<TableRow> loadTables(String datasourceId) {
+    private List<TableRow> loadTables(String datasourceId, String database) {
         List<TableRow> list = new ArrayList<>();
         String sql = """
                 SELECT id, table_name, table_comment, table_aliases, ddl_text
                 FROM schema_table
                 WHERE datasource_id = ?
+                """ + (StringUtils.hasText(database) ? " AND db_name = ?" : "") + """
                 ORDER BY table_name
                 """;
         try (Connection conn = sqliteInitializer.open();
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, datasourceId);
+            if (StringUtils.hasText(database)) {
+                ps.setString(2, database.trim());
+            }
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
                     TableRow row = new TableRow();

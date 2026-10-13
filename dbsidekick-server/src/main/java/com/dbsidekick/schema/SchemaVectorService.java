@@ -65,6 +65,17 @@ public class SchemaVectorService {
         return indexDatasource(datasourceId, null);
     }
 
+    /** 只删除该连接下某一个库的向量，不重写索引。 */
+    public long clearIndex(String datasourceId, String database) {
+        if (!StringUtils.hasText(datasourceId)) {
+            throw new IllegalArgumentException("datasourceId 不能为空");
+        }
+        if (!StringUtils.hasText(database)) {
+            throw new IllegalArgumentException("请先选择数据库");
+        }
+        return milvusSchemaStore.deleteByDatasource(datasourceId.trim(), database.trim());
+    }
+
     public IndexResult indexDatasource(String datasourceId, String database) {
         if (!StringUtils.hasText(datasourceId)) {
             throw new IllegalArgumentException("datasourceId 不能为空");

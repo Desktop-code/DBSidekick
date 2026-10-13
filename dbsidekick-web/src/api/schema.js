@@ -24,10 +24,16 @@ export function indexSchema(datasourceId, database) {
   })
 }
 
-export function generateAliases(datasourceId, overwrite = false) {
+export function generateAliases(datasourceId, overwrite = false, database) {
   return request.post(`/schema/aliases/generate/${datasourceId}`, null, {
-    params: { overwrite },
+    params: database ? { overwrite, database } : { overwrite },
     timeout: 600000
+  })
+}
+
+export function clearSchemaIndex(datasourceId, database) {
+  return request.delete(`/schema/index/${datasourceId}`, {
+    params: { database }
   })
 }
 

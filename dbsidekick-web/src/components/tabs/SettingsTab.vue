@@ -469,21 +469,21 @@ onMounted(load)
   font-size: 13px;
 }
 .hint.ok {
-  color: #67c23a;
+  color: var(--sk-success);
 }
 .hint.fail {
-  color: #f56c6c;
+  color: var(--sk-danger);
 }
 .field-hint {
   margin: 6px 0 0;
-  color: #909399;
+  color: var(--sk-text-tertiary);
   font-size: 12px;
   line-height: 1.5;
 }
 .field-hint {
   margin-left: 12px;
   font-size: 12px;
-  color: #909399;
+  color: var(--sk-text-tertiary);
 }
 .field-hint.block-hint {
   margin-left: 0;

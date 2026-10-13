@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.util.StringUtils;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -95,6 +96,21 @@ public class SchemaController {
         }
     }
 
+    @DeleteMapping("/index/{datasourceId}")
+    public Map<String, Object> clearIndex(@PathVariable("datasourceId") String datasourceId,
+                                          @RequestParam(value = "database", required = false) String database) {
+        try {
+            long deleted = schemaVectorService.clearIndex(datasourceId, database);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("deleted", deleted);
+            return body;
+        } catch (IllegalArgumentException ex) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, ex.getMessage());
+        } catch (Exception ex) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, ex.getMessage(), ex);
+        }
+    }
+
     @PostMapping("/search")
     public Map<String, Object> search(@RequestBody Map<String, Object> body) {
         long start = System.currentTimeMillis();
@@ -132,9 +148,10 @@ public class SchemaController {
     /** 批量生成表别名（写 SQLite，不改 Milvus）。 */
     @PostMapping("/aliases/generate/{datasourceId}")
     public Map<String, Object> generateAliases(@PathVariable("datasourceId") String datasourceId,
-                                               @RequestParam(value = "overwrite", defaultValue = "false") boolean overwrite) {
+                                               @RequestParam(value = "overwrite", defaultValue = "false") boolean overwrite,
+                                               @RequestParam(value = "database", required = false) String database) {
         try {
-            return tableAliasGenerator.generateAll(datasourceId, overwrite).toMap();
+            return tableAliasGenerator.generateAll(datasourceId, overwrite, database).toMap();
         } catch (IllegalArgumentException | IllegalStateException ex) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, ex.getMessage());
         } catch (Exception ex) {

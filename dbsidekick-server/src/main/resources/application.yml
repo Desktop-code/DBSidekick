@@ -42,14 +42,18 @@ sidekick:
     dimension: 768
     ollama-url: http://localhost:11434
   relation:
-    confidence-threshold: 3
+    confidence-threshold: 6
     excluded-column-names: id,uuid,guid,code,no,num,sort,order,seq,version
     temp-table-prefixes: tmp_,temp_,_tmp_,_temp_
     adjacency-whitelist-limit: 8
     inferred-threshold-multiplier: 2
+    max-consecutive-dislikes: 3
+    require-strong-signal: true
     score:
       sql-success: 1
       row-count-positive: 1
+      user-liked: 3
+      user-disliked: -5
       saved-to-script: 5
       user-confirmed: 10
       user-rejected: -100

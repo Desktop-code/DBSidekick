@@ -10,7 +10,9 @@ import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.Image;
+import java.awt.LinearGradientPaint;
 import java.awt.RenderingHints;
+import java.awt.geom.RoundRectangle2D;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -42,8 +44,9 @@ final class StartupSplash {
     private static final int HEIGHT = 320;
     private static final Color TEXT = new Color(0x30, 0x31, 0x33);
     private static final Color MUTED = new Color(0x90, 0x93, 0x99);
-    private static final Color BAR_TRACK = new Color(0xEB, 0xEE, 0xF5);
+    private static final Color BAR_TRACK = new Color(0xE2, 0xE8, 0xF0);
     private static final Color BAR_FILL = new Color(0x40, 0x9E, 0xFF);
+    private static final Color BAR_BAND = new Color(0x3B, 0x82, 0xF6);
     private static final Color BAR_FAIL = new Color(0xF5, 0x6C, 0x6C);
     private static final Color TIP_BG = new Color(0xEC, 0xF5, 0xFF);
 
@@ -303,7 +306,8 @@ final class StartupSplash {
         if (flow != null) {
             return;
         }
-        flow = new Timer(30, event -> bar.stepFlow());
+        bar.restartFlow();
+        flow = new Timer(16, event -> bar.stepFlow());
         flow.start();
     }
 
@@ -413,10 +417,12 @@ final class StartupSplash {
         return wrap;
     }
 
-    /** 固定 320×4，不确定进度时画一段来回的色块。 */
+    /** 固定 320×4。不确定进度时，光带从左侧外滚入、从右侧外滚出，循环时两边都在轨道外。 */
     private static final class ThinBar extends JPanel {
+        private static final double FLOW_MS = 1600;
+
         private int percent = -1;
-        private int phase;
+        private long flowOriginNanos;
         private Color fill = BAR_FILL;
 
         ThinBar() {
@@ -436,9 +442,20 @@ final class StartupSplash {
             repaint();
         }
 
+        void restartFlow() {
+            flowOriginNanos = System.nanoTime();
+        }
+
         void stepFlow() {
-            phase = (phase + 8) % 480;
             repaint();
+        }
+
+        /** 0 在轨道左外，1 在轨道右外。余弦缓入缓出，和 CSS ease-in-out 同一类。 */
+        static float bandX(int width, double t) {
+            double clamped = t <= 0 ? 0 : (t >= 1 ? 1 : t);
+            double eased = 0.5 - 0.5 * Math.cos(Math.PI * clamped);
+            float piece = width * 0.30f;
+            return (float) (-piece + eased * piece * 5f);
         }
 
         @Override
@@ -448,14 +465,29 @@ final class StartupSplash {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
                 int w = getWidth();
                 int h = getHeight();
+                RoundRectangle2D track = new RoundRectangle2D.Float(0, 0, w, h, h, h);
                 g2.setColor(BAR_TRACK);
-                g2.fillRect(0, 0, w, h);
-                g2.setColor(fill);
+                g2.fill(track);
+                g2.setClip(track);
                 if (percent < 0) {
-                    int piece = Math.max(48, w / 3);
-                    int x = phase % (w + piece) - piece;
-                    g2.fillRect(x, 0, piece, h);
+                    float piece = w * 0.30f;
+                    double elapsed = flowOriginNanos == 0
+                            ? 0
+                            : (System.nanoTime() - flowOriginNanos) / 1_000_000.0;
+                    float x = bandX(w, (elapsed % FLOW_MS) / FLOW_MS);
+                    if (piece > 1f) {
+                        g2.setPaint(new LinearGradientPaint(
+                                x, 0, x + piece, 0,
+                                new float[] {0f, 0.35f, 1f},
+                                new Color[] {
+                                        new Color(BAR_BAND.getRed(), BAR_BAND.getGreen(), BAR_BAND.getBlue(), 0),
+                                        new Color(BAR_BAND.getRed(), BAR_BAND.getGreen(), BAR_BAND.getBlue(), 204),
+                                        new Color(BAR_BAND.getRed(), BAR_BAND.getGreen(), BAR_BAND.getBlue(), 0)
+                                }));
+                        g2.fillRect(Math.round(x), 0, Math.round(piece) + 1, h);
+                    }
                 } else {
+                    g2.setColor(fill);
                     g2.fillRect(0, 0, Math.round(w * (percent / 100f)), h);
                 }
                 g2.dispose();

@@ -83,7 +83,17 @@
                 >
                   <div class="phase-head">
                     <span class="icon">{{ phaseIcon(p) }}</span>
-                    <span class="phase-name">{{ p.phase || '阶段' }}</span>
+                    <span class="phase-title">
+                      <span class="phase-name">{{ p.phase || '阶段' }}</span>
+                      <el-tooltip
+                        v-if="phaseSource(p.phase)"
+                        :content="phaseSource(p.phase).tip"
+                        placement="top"
+                        :show-after="300"
+                      >
+                        <span class="phase-src" :class="phaseSource(p.phase).kind">{{ phaseSource(p.phase).label }}</span>
+                      </el-tooltip>
+                    </span>
                     <span class="phase-time">{{ p.elapsedMs ?? 0 }}ms</span>
                   </div>
                   <el-tooltip
@@ -183,6 +193,26 @@
                 </div>
               </el-collapse-item>
             </el-collapse>
+            <div
+              v-if="canShowFeedback(msg)"
+              class="result-feedback"
+            >
+              <span class="feedback-label">这个结果对你有帮助吗？</span>
+              <button
+                type="button"
+                class="feedback-btn"
+                :class="{ active: msg.feedback === 'USEFUL' }"
+                :disabled="!!msg.feedback || feedbackBusy === idx"
+                @click="onResultFeedback(msg, 'USEFUL')"
+              >👍 有用</button>
+              <button
+                type="button"
+                class="feedback-btn"
+                :class="{ active: msg.feedback === 'USELESS' }"
+                :disabled="!!msg.feedback || feedbackBusy === idx"
+                @click="onResultFeedback(msg, 'USELESS')"
+              >👎 没用</button>
+            </div>
             <div v-if="msg.columns?.length" class="table-block">
               <div class="table-meta">
                 <span class="badge badge-rows">✓ {{ msg.rowCount ?? 0 }} 行</span>
@@ -287,6 +317,8 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Coin, CopyDocument, EditPen, FolderAdd } from '@element-plus/icons-vue'
 import { listInstanceDatabases } from '../../api/datasource'
+import { submitRelationFeedback } from '../../api/relation'
+import { getSettings } from '../../api/settings'
 import { streamQuery } from '../../api/text2sql'
 import { saveScript } from '../../api/script'
 import { getSession, renameSession, frequentQuestions } from '../../api/session'
@@ -327,6 +359,7 @@ const composerFocus = ref(false)
 const reasonOpenMap = ref({})
 const streaming = ref(false)
 const loadingSession = ref(false)
+const feedbackBusy = ref(-1)
 const messages = ref([])
 const scrollRef = ref(null)
 
@@ -433,6 +466,38 @@ function formatDuration(ms) {
   return `${(n / 1000).toFixed(1)}s`
 }
 
+/** 有 SQL 且执行成功（有结果列、无错误）才显示反馈 */
+function canShowFeedback(msg) {
+  if (!msg || msg.role !== 'assistant' || msg.pending) return false
+  if (!msg.sql || msg.error) return false
+  return Array.isArray(msg.columns) && msg.columns.length > 0
+}
+
+async function onResultFeedback(msg, feedback) {
+  if (!msg || msg.feedback || !canShowFeedback(msg)) return
+  const sid = sessionId.value
+  if (!sid || !msg.id) {
+    ElMessage.warning('会话尚未保存完成，请稍后再反馈')
+    return
+  }
+  const idx = messages.value.indexOf(msg)
+  feedbackBusy.value = idx
+  try {
+    await submitRelationFeedback({
+      sessionId: sid,
+      messageId: msg.id,
+      sql: msg.sql,
+      feedback
+    })
+    msg.feedback = feedback
+    ElMessage.success(feedback === 'USEFUL' ? '已标记为有用' : '已标记为没用')
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    feedbackBusy.value = -1
+  }
+}
+
 function elapsedBadgeClass(ms) {
   const n = Number(ms) || 0
   if (n < 1000) return 'fast'
@@ -454,6 +519,38 @@ function phaseIcon(p) {
   if (mark === 'skip') return '○'
   if (mark === 'run') return '…'
   return '✓'
+}
+
+/** 标签只按阶段名映射，不改推理结果。执行落到业务库，标成数据库。 */
+const PHASE_SOURCE = {
+  理解问题: { kind: 'local', label: '本地', tip: 'QueryComplexityAnalyzer' },
+  检索示例: { kind: 'local', label: '本地', tip: 'FewShotService' },
+  安全校验: { kind: 'local', label: '本地', tip: 'SqlGuard' },
+  脚本模式: { kind: 'local', label: '本地', tip: 'Text2SqlService' },
+  改写问题: { kind: 'ai', label: 'AI', tip: 'ai' },
+  生成SQL: { kind: 'ai', label: 'AI', tip: 'ai' },
+  '生成SQL(重试)': { kind: 'ai', label: 'AI', tip: 'ai' },
+  '生成SQL（重试）': { kind: 'ai', label: 'AI', tip: 'ai' },
+  检索Schema: { kind: 'vector', label: '向量', tip: 'Milvus + ONNX BGE' },
+  执行: { kind: 'db', label: '数据库', tip: 'db' }
+}
+
+const llmSourceTip = ref('DeepSeek')
+
+const boundDialect = computed(() => {
+  const id = localDsId.value || appStore.currentDatasourceId
+  const ds = (appStore.datasources || []).find((d) => d.id === id)
+  return dialectOf(ds)
+})
+
+function phaseSource(phase) {
+  const key = String(phase || '').replace(/\s+/g, '')
+  const hit = PHASE_SOURCE[key]
+  if (!hit) return null
+  let tip = hit.tip
+  if (tip === 'ai') tip = llmSourceTip.value
+  if (tip === 'db') tip = boundDialect.value
+  return { kind: hit.kind, label: hit.label, tip }
 }
 
 function truncate(text, max = 80) {
@@ -507,6 +604,16 @@ function highlightSqlLine(line) {
     if (ch === '-' && line[i + 1] === '-') {
       html += `<span class="tok-cmt">${escapeHtml(line.slice(i))}</span>`
       break
+    }
+    if (ch === '/' && line[i + 1] === '*') {
+      const end = line.indexOf('*/', i + 2)
+      if (end < 0) {
+        html += `<span class="tok-cmt">${escapeHtml(line.slice(i))}</span>`
+        break
+      }
+      html += `<span class="tok-cmt">${escapeHtml(line.slice(i, end + 2))}</span>`
+      i = end + 2
+      continue
     }
     if (/[0-9]/.test(ch) && (i === 0 || !/[A-Za-z_]/.test(line[i - 1]))) {
       let j = i + 1
@@ -794,6 +901,7 @@ function mapHistoryMessages(list) {
       role: 'assistant',
       summary: m.content || '',
       phases: [],
+      id: m.id || '',
       sql: m.sqlText || '',
       columns: [],
       rows: [],
@@ -802,7 +910,8 @@ function mapHistoryMessages(list) {
       elapsedMs: null,
       error: '',
       pending: false,
-      page: 1
+      page: 1,
+      feedback: m.userFeedback || ''
     }
     if (m.reasoningJson) {
       try {
@@ -1075,6 +1184,7 @@ async function send() {
   messages.value.push({ role: 'user', content: question })
   messages.value.push({
     role: 'assistant',
+    id: '',
     summary: '',
     phases: [],
     sql: '',
@@ -1087,7 +1197,8 @@ async function send() {
     pending: true,
     scriptMode: false,
     scriptSteps: [],
-    page: 1
+    page: 1,
+    feedback: ''
   })
   // 必须用数组里的响应式代理，不能用 push 前的普通对象，否则 phases 追加不触发视图更新
   const aiMsg = messages.value[messages.value.length - 1]
@@ -1178,6 +1289,9 @@ async function send() {
         aiMsg.pending = false
         streaming.value = false
         const savedId = data?.sessionId || sid
+        if (data?.messageId) {
+          aiMsg.id = data.messageId
+        }
         if (savedId && savedId !== sessionId.value) {
           sessionId.value = savedId
           appStore.setCurrentSessionId(savedId)
@@ -1189,6 +1303,10 @@ async function send() {
             if (detail?.title) {
               sessionTitle.value = detail.title
               syncTabMeta()
+            }
+            if (!aiMsg.id && Array.isArray(detail?.messages)) {
+              const lastAi = [...detail.messages].reverse().find((m) => m.role === 'assistant')
+              if (lastAi?.id) aiMsg.id = lastAi.id
             }
           } catch {
             // ignore
@@ -1212,6 +1330,11 @@ async function send() {
 }
 
 onMounted(async () => {
+  getSettings()
+    .then((s) => {
+      llmSourceTip.value = s?.['llm.provider'] === 'OPENAI_COMPATIBLE' ? 'OpenAI 兼容' : 'DeepSeek'
+    })
+    .catch(() => {})
   if (!appStore.datasources.length) {
     try {
       await appStore.loadDatasources()
@@ -1282,8 +1405,8 @@ watch(input, () => nextTick(() => resizeComposer()))
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
-  background: #fff;
-  border-bottom: 1px solid var(--sk-border, #e2e8f0);
+  background: var(--sk-bg-elevated);
+  border-bottom: 1px solid var(--sk-border, var(--sk-border));
   gap: 12px;
 }
 .chat-header .left {
@@ -1295,15 +1418,15 @@ watch(input, () => nextTick(() => resizeComposer()))
 .title {
   font-weight: 600;
   font-size: 14px;
-  color: var(--sk-text-primary, #1e293b);
+  color: var(--sk-text-primary, var(--sk-text-primary));
 }
 .title.clickable {
   cursor: pointer;
   border-bottom: 1px dashed transparent;
 }
 .title.clickable:hover {
-  color: #3b82f6;
-  border-bottom-color: #3b82f6;
+  color: var(--sk-primary);
+  border-bottom-color: var(--sk-primary);
 }
 .ds-wrap {
   display: inline-flex;
@@ -1315,31 +1438,31 @@ watch(input, () => nextTick(() => resizeComposer()))
   width: 160px;
 }
 .sep {
-  color: #94a3b8;
+  color: var(--sk-text-tertiary);
   font-size: 12px;
 }
 .ds-type-icon {
   font-size: 14px;
-  color: #3b82f6;
+  color: var(--sk-primary);
 }
 .ds-type-icon.postgres {
-  color: #1e3a8a;
+  color: var(--sk-postgres);
 }
 .ds-db {
   font-size: 12px;
-  color: var(--sk-text-tertiary, #94a3b8);
+  color: var(--sk-text-tertiary, var(--sk-text-tertiary));
 }
 .clear-btn {
-  color: var(--sk-text-secondary, #64748b);
+  color: var(--sk-text-secondary, var(--sk-text-secondary));
 }
 .clear-btn:hover {
-  color: #ef4444;
+  color: var(--sk-danger);
 }
 .messages {
   flex: 1;
   overflow: auto;
   padding: 20px 16px 24px;
-  background: #f8fafc;
+  background: var(--sk-bg);
 }
 .msg {
   display: flex;
@@ -1359,14 +1482,14 @@ watch(input, () => nextTick(() => resizeComposer()))
   line-height: 1.5;
 }
 .user-bubble {
-  background: #409eff;
-  color: #fff;
+  background: var(--sk-primary);
+  color: var(--sk-on-primary);
   white-space: pre-wrap;
 }
 .ai-bubble {
-  background: #fff;
-  border: 1px solid #ebeef5;
-  color: #303133;
+  background: var(--sk-bg-elevated);
+  border: 1px solid var(--sk-border);
+  color: var(--sk-text-primary);
   width: 100%;
   max-width: 920px;
   padding: 0;
@@ -1391,7 +1514,7 @@ watch(input, () => nextTick(() => resizeComposer()))
   padding: 4px 2px;
   border: none;
   background: transparent;
-  color: var(--sk-text-secondary, #64748b);
+  color: var(--sk-text-secondary, var(--sk-text-secondary));
   font-size: 13px;
   cursor: pointer;
   text-align: left;
@@ -1402,32 +1525,32 @@ watch(input, () => nextTick(() => resizeComposer()))
   font-weight: 700;
 }
 .reason-mark.done {
-  color: #10b981;
+  color: var(--sk-success);
 }
 .reason-mark.fail {
-  color: #ef4444;
+  color: var(--sk-danger);
 }
 .reason-mark.running {
-  color: #3b82f6;
+  color: var(--sk-primary);
 }
 .reason-title {
-  color: var(--sk-text-primary, #1e293b);
+  color: var(--sk-text-primary, var(--sk-text-primary));
   font-weight: 600;
 }
 .reason-sep {
-  color: #cbd5e1;
+  color: var(--sk-border-strong);
 }
 .reason-toggle {
   margin-left: auto;
   font-size: 12px;
-  color: var(--sk-text-tertiary, #94a3b8);
+  color: var(--sk-text-tertiary, var(--sk-text-tertiary));
 }
 .mini-spin {
   display: inline-block;
   width: 12px;
   height: 12px;
-  border: 2px solid #bfdbfe;
-  border-top-color: #3b82f6;
+  border: 2px solid var(--sk-border-strong);
+  border-top-color: var(--sk-primary);
   border-radius: 50%;
   animation: mini-spin 0.8s linear infinite;
   vertical-align: -1px;
@@ -1460,40 +1583,71 @@ watch(input, () => nextTick(() => resizeComposer()))
   border-radius: 6px;
 }
 .phase-line:hover {
-  background: #f1f5f9;
+  background: var(--sk-hover-bg);
   transition: background 0.15s;
 }
 .phase-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
+  min-width: 0;
+}
+.phase-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
   min-width: 0;
 }
 .phase-line .icon {
   width: 14px;
   text-align: center;
-  color: #52c41a;
+  color: var(--sk-success);
   flex-shrink: 0;
 }
 .phase-line.fail .icon {
-  color: #ef4444;
+  color: var(--sk-danger);
 }
 .phase-line.skip .icon {
-  color: #94a3b8;
+  color: var(--sk-text-tertiary);
 }
 .phase-line.run .icon {
-  color: #3b82f6;
+  color: var(--sk-primary);
 }
 .phase-line .phase-name {
-  color: #1e293b;
+  color: var(--sk-text-primary);
   font-weight: 500;
-  flex: 1;
-  min-width: 0;
+  white-space: nowrap;
+}
+.phase-src {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.phase-src.local {
+  background: var(--sk-hover-bg);
+  color: var(--sk-text-strong);
+  box-shadow: inset 0 0 0 1px var(--sk-border);
+}
+.phase-src.ai {
+  background: var(--sk-active-bg);
+  color: var(--sk-primary);
+}
+.phase-src.vector {
+  background: var(--sk-chip-vector-bg);
+  color: var(--sk-chip-vector-fg);
+}
+.phase-src.db {
+  background: var(--sk-chip-db-bg);
+  color: var(--sk-chip-db-fg);
 }
 .phase-line .phase-content {
   display: block;
   margin-left: 26px;
-  color: #64748b;
+  color: var(--sk-text-secondary);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1501,20 +1655,20 @@ watch(input, () => nextTick(() => resizeComposer()))
   font-size: 12px;
 }
 .phase-line .phase-content.sql-preview {
-  font-family: 'SF Mono', Consolas, monospace;
-  color: #e2e8f0;
-  background: #1e293b;
+  font-family: Consolas, 'Courier New', monospace;
+  color: var(--sk-code-fg);
+  background: var(--sk-code-bg);
   padding: 1px 6px;
   border-radius: 4px;
 }
 .phase-line .phase-content.exec-result {
-  color: #16a34a;
+  color: var(--sk-success);
 }
 .phase-line .phase-content.check-fail {
-  color: #ef4444;
+  color: var(--sk-danger);
 }
 .phase-line .phase-time {
-  color: #94a3b8;
+  color: var(--sk-text-tertiary);
   font-family: 'SF Mono', Consolas, monospace;
   font-size: 11px;
   flex-shrink: 0;
@@ -1525,7 +1679,7 @@ watch(input, () => nextTick(() => resizeComposer()))
 .summary {
   font-size: 14px;
   font-weight: 500;
-  color: #303133;
+  color: var(--sk-text-primary);
   margin: 16px 0 0;
   line-height: 1.6;
 }
@@ -1536,7 +1690,7 @@ watch(input, () => nextTick(() => resizeComposer()))
   margin-top: 10px;
   padding: 4px 2px 2px;
   font-size: 12px;
-  color: #909399;
+  color: var(--sk-text-tertiary);
   user-select: none;
 }
 .thinking-label {
@@ -1554,7 +1708,7 @@ watch(input, () => nextTick(() => resizeComposer()))
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: #909399;
+  background: var(--sk-text-tertiary);
   opacity: 0.35;
   animation: thinking-bounce 1.2s ease-in-out infinite;
 }
@@ -1577,16 +1731,16 @@ watch(input, () => nextTick(() => resizeComposer()))
   }
 }
 .err {
-  color: #f56c6c;
-  background: #fef0f0;
+  color: var(--sk-danger);
+  background: var(--sk-danger-bg);
   padding: 10px 12px;
   border-radius: 6px;
   margin-bottom: 12px;
 }
 .sql-block {
   margin-top: 16px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border: 1px solid var(--sk-border);
+  border-radius: 6px;
   overflow: hidden;
 }
 .sql-head {
@@ -1594,13 +1748,13 @@ watch(input, () => nextTick(() => resizeComposer()))
   justify-content: space-between;
   align-items: center;
   padding: 6px 12px;
-  background: #f8fafc;
+  background: var(--sk-bg);
   font-size: 12px;
-  color: #64748b;
+  color: var(--sk-text-secondary);
 }
 .sql-title {
   font-weight: 600;
-  color: #1e293b;
+  color: var(--sk-text-primary);
 }
 .sql-head .btns {
   display: flex;
@@ -1614,7 +1768,7 @@ watch(input, () => nextTick(() => resizeComposer()))
 .page-size-label {
   margin-left: 8px;
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--sk-text-tertiary);
 }
 .page-size-switch {
   margin-left: 4px;
@@ -1622,18 +1776,18 @@ watch(input, () => nextTick(() => resizeComposer()))
 .sql-code {
   position: relative;
   padding: 28px 0 10px;
-  background: #1e1e2e;
-  color: #cdd6f4;
-  font-family: Consolas, Monaco, monospace;
-  font-size: 12px;
-  line-height: 1.55;
+  background: var(--sk-code-bg);
+  color: var(--sk-code-fg);
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.6;
 }
 .sql-corner {
   position: absolute;
   top: 8px;
   left: 12px;
   font-size: 11px;
-  color: #94a3b8;
+  color: var(--sk-code-muted);
   letter-spacing: 0.04em;
 }
 .sql-line {
@@ -1647,57 +1801,95 @@ watch(input, () => nextTick(() => resizeComposer()))
   width: 24px;
   flex-shrink: 0;
   text-align: right;
-  color: #6b7280;
+  color: var(--sk-code-muted);
   user-select: none;
 }
 .sql-line :deep(.tok-kw) {
-  color: #7aa2f7;
+  color: #569cd6;
 }
 .sql-line :deep(.tok-fn) {
-  color: #bb9af7;
+  color: #dcdcaa;
 }
 .sql-line :deep(.tok-str) {
-  color: #9ece6a;
+  color: #ce9178;
 }
 .sql-line :deep(.tok-num) {
-  color: #ff9e64;
+  color: #b5cea8;
 }
 .sql-line :deep(.tok-cmt) {
-  color: #6b7280;
+  color: #6a9955;
 }
 .script-steps {
   margin-top: 12px;
-  border: 1px solid #ebeef5;
+  border: 1px solid var(--sk-border);
   border-radius: 8px;
   overflow: hidden;
 }
 .script-step-row {
   padding: 8px 0;
-  border-bottom: 1px solid #f0f2f5;
+  border-bottom: 1px solid var(--sk-border);
   font-size: 12px;
 }
 .script-step-row:last-child {
   border-bottom: none;
 }
 .script-step-row .idx {
-  color: #909399;
+  color: var(--sk-text-tertiary);
   margin-right: 8px;
 }
 .script-step-row .meta {
-  color: #606266;
+  color: var(--sk-text-secondary);
 }
 .script-step-row .step-err {
-  color: #f56c6c;
+  color: var(--sk-danger);
 }
 .script-step-row .step-sql {
   margin: 6px 0 0;
   padding: 8px 10px;
-  background: #f5f7fa;
+  background: var(--sk-hover-bg);
   border-radius: 4px;
   white-space: pre-wrap;
   font-family: Consolas, Monaco, monospace;
   font-size: 11px;
-  color: #303133;
+  color: var(--sk-text-primary);
+}
+.result-feedback {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--sk-text-secondary);
+}
+.feedback-label {
+  margin-right: 4px;
+}
+.feedback-btn {
+  appearance: none;
+  border: 1px solid var(--sk-border);
+  background: var(--sk-bg-elevated);
+  color: var(--sk-text-secondary);
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.feedback-btn:hover:not(:disabled) {
+  border-color: var(--sk-primary);
+  color: var(--sk-primary-strong);
+}
+.feedback-btn.active {
+  border-color: var(--sk-primary);
+  color: var(--sk-primary-strong);
+  background: var(--sk-active-bg);
+  cursor: default;
+}
+.feedback-btn:disabled:not(.active) {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 .table-block {
   margin-top: 16px;
@@ -1718,52 +1910,52 @@ watch(input, () => nextTick(() => resizeComposer()))
   line-height: 22px;
 }
 .badge-rows {
-  color: #047857;
-  background: #ecfdf5;
+  color: var(--sk-success-text);
+  background: var(--sk-success-bg);
 }
 .badge-trunc {
-  color: #b45309;
-  background: #fffbeb;
+  color: var(--sk-warning-text);
+  background: var(--sk-warning-bg);
 }
 .badge-time.fast {
-  color: #047857;
-  background: #ecfdf5;
+  color: var(--sk-success-text);
+  background: var(--sk-success-bg);
 }
 .badge-time.mid {
-  color: #1d4ed8;
-  background: #eff6ff;
+  color: var(--sk-primary-strong);
+  background: var(--sk-active-bg);
 }
 .badge-time.slow {
-  color: #c2410c;
-  background: #fff7ed;
+  color: var(--sk-slow-text);
+  background: var(--sk-slow-bg);
 }
 .result-table {
   --el-table-border-color: transparent;
-  --el-table-header-bg-color: #f8fafc;
-  --el-table-row-hover-bg-color: #eff6ff;
-  --el-table-bg-color: #fff;
+  --el-table-header-bg-color: var(--sk-bg);
+  --el-table-row-hover-bg-color: var(--sk-active-bg);
+  --el-table-bg-color: var(--sk-bg-elevated);
 }
 .result-table :deep(.el-table__inner-wrapper::before) {
   display: none;
 }
 .result-table :deep(.el-table__cell) {
   border-right: none;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid var(--sk-hover-bg);
   padding: 8px 12px;
 }
 .result-table :deep(th.el-table__cell) {
-  background: #f8fafc;
-  color: #64748b;
+  background: var(--sk-bg);
+  color: var(--sk-text-secondary);
   font-weight: 600;
 }
 .result-table :deep(.el-table__body tr) {
   height: 36px;
 }
 .result-table :deep(.el-table__body tr:nth-child(even) td) {
-  background: #fafbfc;
+  background: var(--sk-bg-sidebar);
 }
 .result-table :deep(.el-table__body tr:hover > td) {
-  background: #eff6ff !important;
+  background: var(--sk-active-bg) !important;
 }
 .result-pager {
   margin-top: 10px;
@@ -1775,7 +1967,7 @@ watch(input, () => nextTick(() => resizeComposer()))
   gap: 2px;
   padding: 16px 8px;
   font-size: 13px;
-  color: #909399;
+  color: var(--sk-text-tertiary);
   user-select: none;
 }
 .examples {
@@ -1785,11 +1977,11 @@ watch(input, () => nextTick(() => resizeComposer()))
   justify-content: center;
   min-height: 180px;
   gap: 12px;
-  color: #606266;
+  color: var(--sk-text-secondary);
 }
 .examples-title {
   font-size: 13px;
-  color: #909399;
+  color: var(--sk-text-tertiary);
 }
 .examples-list {
   display: flex;
@@ -1800,27 +1992,27 @@ watch(input, () => nextTick(() => resizeComposer()))
 }
 .composer {
   padding: 0 16px 12px;
-  background: #f8fafc;
+  background: var(--sk-bg);
 }
 .composer-context {
   margin-bottom: 6px;
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--sk-text-tertiary);
   text-align: left;
 }
 .input-wrapper {
-  background: #fff;
-  border: 1px solid #d0d5dd;
+  background: var(--sk-bg-elevated);
+  border: 1px solid var(--sk-border);
   border-radius: 8px;
   padding: 8px 12px 8px;
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 .input-wrapper.focused {
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+  border-color: var(--sk-primary);
+  box-shadow: 0 0 0 2px var(--sk-active-bg);
 }
 .input-wrapper.disabled {
-  background: #f8fafc;
+  background: var(--sk-bg);
 }
 .input-textarea {
   display: block;
@@ -1833,7 +2025,7 @@ watch(input, () => nextTick(() => resizeComposer()))
   resize: none;
   overflow-y: hidden;
   background: transparent;
-  color: var(--sk-text-primary, #1e293b);
+  color: var(--sk-text-primary, var(--sk-text-primary));
   font-size: 14px;
   font-family: inherit;
   line-height: 22px;
@@ -1852,10 +2044,10 @@ watch(input, () => nextTick(() => resizeComposer()))
 }
 .char-count {
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--sk-text-tertiary);
 }
 .char-count.over {
-  color: #dc2626;
+  color: var(--sk-danger);
 }
 .input-footer {
   display: flex;
@@ -1867,10 +2059,10 @@ watch(input, () => nextTick(() => resizeComposer()))
 .hint {
   margin-right: auto;
   font-size: 12px;
-  color: #94a3b8;
+  color: var(--sk-text-tertiary);
 }
 .hint.warn {
-  color: #d97706;
+  color: var(--sk-warning);
 }
 </style>
 
