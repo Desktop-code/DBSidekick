@@ -65,6 +65,7 @@
     <SetupWizard />
     <NewSessionDialog />
     <SettingsDialog />
+    <SchemaInitModal />
   </div>
 </template>
 
@@ -79,6 +80,7 @@ import SqlListPanel from '../components/SqlListPanel.vue'
 import SetupWizard from '../components/SetupWizard.vue'
 import NewSessionDialog from '../components/NewSessionDialog.vue'
 import SettingsDialog from '../components/SettingsDialog.vue'
+import SchemaInitModal from '../components/SchemaInitModal.vue'
 import PanelResizer from '../components/PanelResizer.vue'
 import { useAppStore } from '../stores/app'
 import { useTabsStore } from '../stores/tabs'

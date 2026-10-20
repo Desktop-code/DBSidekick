@@ -61,10 +61,20 @@ public class RelationInferService {
     }
 
     public InferReport infer(String datasourceId) {
-        return infer(datasourceId, null);
+        return infer(datasourceId, null, ProgressListener.NOOP);
     }
 
     public InferReport infer(String datasourceId, String database) {
+        return infer(datasourceId, database, ProgressListener.NOOP);
+    }
+
+    /**
+     * 规则推断外键关系。
+     *
+     * @param progress 可选进度回调（按表推进）；传 null 等同 {@link ProgressListener#NOOP}
+     */
+    public InferReport infer(String datasourceId, String database, ProgressListener progress) {
+        ProgressListener listener = ProgressListener.orNoop(progress);
         long start = System.currentTimeMillis();
         if (!StringUtils.hasText(datasourceId)) {
             throw new IllegalArgumentException("datasourceId 不能为空");
@@ -83,7 +93,10 @@ public class RelationInferService {
             int inferred = 0;
             int existing = 0;
             int skipped = 0;
+            int total = tables.size();
+            listener.onProgress(SchemaInitStep.INFER.name(), 0, total, "正在推断表关系 0/" + total);
 
+            int processed = 0;
             for (TableMeta table : tables) {
                 List<ColumnMeta> columns = loadColumns(conn, table.id);
                 for (ColumnMeta col : columns) {
@@ -108,6 +121,9 @@ public class RelationInferService {
                         existing++;
                     }
                 }
+                processed++;
+                listener.onProgress(SchemaInitStep.INFER.name(), processed, total,
+                        "正在推断表关系 " + processed + "/" + total);
             }
 
             long elapsed = System.currentTimeMillis() - start;

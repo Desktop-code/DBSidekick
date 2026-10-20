@@ -57,10 +57,14 @@
               v-if="!openaiCompatible"
               v-model="form.llmModel"
               style="width: 320px"
-              placeholder="选择模型"
+              placeholder="选择或输入模型"
+              filterable
+              allow-create
+              default-first-option
             >
-              <el-option label="deepseek-chat" value="deepseek-chat" />
-              <el-option label="deepseek-reasoner" value="deepseek-reasoner" />
+              <el-option label="deepseek-v4-pro（DeepSeek-V4 专业版）" value="deepseek-v4-pro" />
+              <el-option label="deepseek-flash（DeepSeek-V4 极速版，推荐日常查数）" value="deepseek-flash" />
+              <el-option label="deepseek-chat（旧版兼容）" value="deepseek-chat" />
             </el-select>
             <el-input
               v-else
@@ -70,6 +74,9 @@
             />
             <p v-if="openaiCompatible" class="field-hint block-hint">
               填写服务商文档中的模型名，如 gpt-4o-mini / qwen-plus / llama3.1
+            </p>
+            <p v-else class="field-hint block-hint">
+              可从列表选择，也可直接输入自定义模型名（如 deepseek-v4.1-pro）
             </p>
           </el-form-item>
           <el-form-item label="温度">
@@ -264,7 +271,8 @@ function onClose() {
 function displayModel(provider, raw) {
   const m = String(raw || '').trim()
   if (provider === 'OPENAI_COMPATIBLE') return m
-  if (m === 'deepseek-chat' || m === 'deepseek-reasoner') return m
+  // 保留预设与自定义模型名（allow-create）；空值回退旧版兼容
+  if (m) return m
   return 'deepseek-chat'
 }
 
@@ -273,13 +281,12 @@ function onProviderChange(value) {
     if (!form.llmBaseUrl || form.llmBaseUrl === 'https://api.deepseek.com') {
       form.llmBaseUrl = ''
     }
-    if (form.llmModel === 'deepseek-chat' || form.llmModel === 'deepseek-reasoner') {
-      form.llmModel = ''
-    }
+    // 切换到 OpenAI 兼容时清空模型，由用户自由填写
+    form.llmModel = ''
     return
   }
   form.llmBaseUrl = 'https://api.deepseek.com'
-  if (form.llmModel !== 'deepseek-chat' && form.llmModel !== 'deepseek-reasoner') {
+  if (!form.llmModel) {
     form.llmModel = 'deepseek-chat'
   }
 }
