@@ -42,6 +42,8 @@
   --sk-inline-num: #0550ae;
   --sk-inline-cmt: #6e7781;
   --sk-inline-fn: #a3157a;
+  --sk-scrollbar-thumb: #cbd5e1;
+  --sk-scrollbar-thumb-hover: #94a3b8;
   color-scheme: light;
 
   --el-color-primary: #3b82f6;
@@ -103,6 +105,8 @@ html.dark {
   --sk-inline-num: #79c0ff;
   --sk-inline-cmt: #8b949e;
   --sk-inline-fn: #d2a8ff;
+  --sk-scrollbar-thumb: #475569;
+  --sk-scrollbar-thumb-hover: #64748b;
   color-scheme: dark;
 
   --el-bg-color: var(--sk-bg-elevated);
@@ -175,4 +179,66 @@ html.theme-ready :where(
 
 .el-textarea__inner {
   border-radius: 6px;
+}
+
+/* 统一滚动条：默认隐藏，容器 hover 时显示 */
+.sk-scroll,
+.tree-wrap,
+.session-list,
+.sql-list .list,
+.tab-container .pane,
+.settings-body {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.sk-scroll:hover,
+.tree-wrap:hover,
+.session-list:hover,
+.sql-list .list:hover,
+.tab-container .pane:hover,
+.settings-body:hover {
+  scrollbar-color: var(--sk-scrollbar-thumb) transparent;
+}
+.sk-scroll::-webkit-scrollbar,
+.tree-wrap::-webkit-scrollbar,
+.session-list::-webkit-scrollbar,
+.sql-list .list::-webkit-scrollbar,
+.tab-container .pane::-webkit-scrollbar,
+.settings-body::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.sk-scroll::-webkit-scrollbar-track,
+.tree-wrap::-webkit-scrollbar-track,
+.session-list::-webkit-scrollbar-track,
+.sql-list .list::-webkit-scrollbar-track,
+.tab-container .pane::-webkit-scrollbar-track,
+.settings-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sk-scroll::-webkit-scrollbar-thumb,
+.tree-wrap::-webkit-scrollbar-thumb,
+.session-list::-webkit-scrollbar-thumb,
+.sql-list .list::-webkit-scrollbar-thumb,
+.tab-container .pane::-webkit-scrollbar-thumb,
+.settings-body::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 3px;
+  transition: background-color 0.2s ease;
+}
+.sk-scroll:hover::-webkit-scrollbar-thumb,
+.tree-wrap:hover::-webkit-scrollbar-thumb,
+.session-list:hover::-webkit-scrollbar-thumb,
+.sql-list .list:hover::-webkit-scrollbar-thumb,
+.tab-container .pane:hover::-webkit-scrollbar-thumb,
+.settings-body:hover::-webkit-scrollbar-thumb {
+  background: var(--sk-scrollbar-thumb);
+}
+.sk-scroll:hover::-webkit-scrollbar-thumb:hover,
+.tree-wrap:hover::-webkit-scrollbar-thumb:hover,
+.session-list:hover::-webkit-scrollbar-thumb:hover,
+.sql-list .list:hover::-webkit-scrollbar-thumb:hover,
+.tab-container .pane:hover::-webkit-scrollbar-thumb:hover,
+.settings-body:hover::-webkit-scrollbar-thumb:hover {
+  background: var(--sk-scrollbar-thumb-hover);
 }

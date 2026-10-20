@@ -1,9 +1,13 @@
 <template>
   <div class="main-view">
     <AppMenuBar />
-    <div class="body">
-      <aside class="side left" :class="{ collapsed: !leftOpen }">
-        <div v-show="leftOpen" class="side-body">
+    <div class="body" :class="{ resizing }">
+      <aside
+        class="side left"
+        :class="{ collapsed: !leftOpen }"
+        :style="leftStyle"
+      >
+        <div v-show="leftOpen" class="side-body sk-scroll">
           <DataSourceTree @collapse="leftOpen = false" />
         </div>
         <div v-show="!leftOpen" class="side-rail">
@@ -20,11 +24,32 @@
           </el-tooltip>
         </div>
       </aside>
-      <main class="center">
+
+      <PanelResizer
+        v-if="leftOpen"
+        direction="left"
+        @start="onLeftResizeStart"
+        @move="onLeftResizeMove"
+        @end="onLeftResizeEnd"
+      />
+
+      <main class="center sk-scroll">
         <TabContainer />
       </main>
-      <aside class="side right" :class="{ collapsed: !rightOpen }">
-        <div v-show="rightOpen" class="side-body">
+
+      <PanelResizer
+        direction="right"
+        @start="onRightResizeStart"
+        @move="onRightResizeMove"
+        @end="onRightResizeEnd"
+      />
+
+      <aside
+        class="side right"
+        :class="{ collapsed: !rightOpen }"
+        :style="rightStyle"
+      >
+        <div v-show="rightOpen" class="side-body sk-scroll">
           <SqlListPanel @collapse="rightOpen = false" />
         </div>
         <div v-show="!rightOpen" class="side-rail">
@@ -39,11 +64,12 @@
     <AppStatusBar />
     <SetupWizard />
     <NewSessionDialog />
+    <SettingsDialog />
   </div>
 </template>
 
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ChatDotRound, Coin, Document, Setting } from '@element-plus/icons-vue'
 import AppMenuBar from '../components/AppMenuBar.vue'
 import AppStatusBar from '../components/AppStatusBar.vue'
@@ -52,8 +78,12 @@ import TabContainer from '../components/TabContainer.vue'
 import SqlListPanel from '../components/SqlListPanel.vue'
 import SetupWizard from '../components/SetupWizard.vue'
 import NewSessionDialog from '../components/NewSessionDialog.vue'
+import SettingsDialog from '../components/SettingsDialog.vue'
+import PanelResizer from '../components/PanelResizer.vue'
 import { useAppStore } from '../stores/app'
 import { useTabsStore } from '../stores/tabs'
+
+const COLLAPSED = 48
 
 const appStore = useAppStore()
 const tabsStore = useTabsStore()
@@ -64,12 +94,19 @@ const railItems = [
   { id: 'settings', label: '设置', icon: Setting }
 ]
 
+const resizing = ref(false)
+let dragStartLeft = 240
+let dragStartRight = 240
+
 function onRail(id) {
-  appStore.focusSidebar(id)
   if (id === 'settings') {
-    tabsStore.openSettings({ section: 'llm' })
+    tabsStore.closeSettingsTabs()
+    appStore.openSettingsDialog('llm')
+    return
   }
+  appStore.focusSidebar(id)
 }
+
 const leftOpen = computed({
   get: () => appStore.leftPanelOpen,
   set: (open) => appStore.setLeftPanelOpen(open)
@@ -78,6 +115,55 @@ const rightOpen = computed({
   get: () => appStore.rightPanelOpen,
   set: (open) => appStore.setRightPanelOpen(open)
 })
+
+const leftStyle = computed(() => {
+  const w = leftOpen.value ? appStore.leftPanelWidth : COLLAPSED
+  return { width: `${w}px`, flexBasis: `${w}px` }
+})
+
+const rightStyle = computed(() => {
+  const w = rightOpen.value ? Math.max(appStore.rightPanelWidth, COLLAPSED) : COLLAPSED
+  return { width: `${w}px`, flexBasis: `${w}px` }
+})
+
+function onLeftResizeStart() {
+  resizing.value = true
+  dragStartLeft = appStore.leftPanelWidth
+}
+
+function onLeftResizeMove(delta) {
+  appStore.previewLeftPanelWidth(dragStartLeft + delta)
+}
+
+function onLeftResizeEnd() {
+  resizing.value = false
+  appStore.commitLeftPanelWidth()
+}
+
+function onRightResizeStart() {
+  resizing.value = true
+  dragStartRight = rightOpen.value ? appStore.rightPanelWidth : COLLAPSED
+}
+
+function onRightResizeMove(delta) {
+  const next = dragStartRight + delta
+  if (next <= appStore.rightCollapseSnap) {
+    appStore.previewRightPanelWidth(COLLAPSED)
+    if (rightOpen.value) {
+      appStore.rightPanelOpen = false
+    }
+    return
+  }
+  if (!rightOpen.value) {
+    appStore.rightPanelOpen = true
+  }
+  appStore.previewRightPanelWidth(next)
+}
+
+function onRightResizeEnd() {
+  resizing.value = false
+  appStore.commitRightPanelWidth()
+}
 
 watch(
   () => appStore.scriptFocusToken,
@@ -98,28 +184,28 @@ watch(
   flex: 1;
   min-height: 0;
   display: flex;
+  overflow-x: auto;
 }
 .side {
   position: relative;
-  flex: 0 0 240px;
-  width: 240px;
+  flex: 0 0 auto;
   min-height: 0;
   overflow: hidden;
   background: var(--sk-card);
   border-right: 1px solid var(--sk-border);
   transition: width 0.18s ease, flex-basis 0.18s ease, background-color 200ms ease, border-color 200ms ease;
 }
+.body.resizing .side {
+  transition: none;
+}
 .side.right {
   border-right: none;
   border-left: 1px solid var(--sk-border);
-  transition: width 200ms ease, flex-basis 200ms ease;
 }
 .side.left {
   background: var(--sk-bg-sidebar);
 }
 .side.collapsed {
-  flex-basis: 48px;
-  width: 48px;
   background: var(--sk-bg-sidebar);
 }
 .side-rail {
@@ -169,8 +255,8 @@ watch(
   overflow: hidden;
 }
 .center {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: 500px;
   min-height: 0;
   overflow: hidden;
 }

@@ -55,6 +55,7 @@ tokenizer.json
 docs/test-report-*
 docs/README.MD
 docs/code-review-*
+code-review/
 
 # Cursor / AI 工具本地配置（不入库）
 .cursorignore
