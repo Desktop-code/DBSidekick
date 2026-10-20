@@ -34,7 +34,6 @@
             :initial-sql="tab.props?.initialSql || ''"
             :initial-datasource-id="tab.props?.initialDatasourceId || ''"
           />
-          <SettingsTab v-else-if="tab.type === 'settings'" :tab="tab" />
           <ConnectionManageTab v-else-if="tab.type === 'connectionManage'" :tab="tab" />
           <RelationManageTab v-else-if="tab.type === 'relationManage'" :tab="tab" />
           <el-empty v-else description="未知标签页类型" />
@@ -71,15 +70,13 @@ import {
   Connection,
   DataLine,
   Document,
-  EditPen,
-  Setting
+  EditPen
 } from '@element-plus/icons-vue'
 import { useTabsStore } from '../stores/tabs'
 import { useAppStore } from '../stores/app'
 import { useThemeStore } from '../stores/theme'
 import AiChatTab from './tabs/AiChatTab.vue'
 import QueryEditorTab from './tabs/QueryEditorTab.vue'
-import SettingsTab from './tabs/SettingsTab.vue'
 import ConnectionManageTab from './tabs/ConnectionManageTab.vue'
 import RelationManageTab from './tabs/RelationManageTab.vue'
 import { frequentQuestions } from '../api/session'
@@ -101,7 +98,6 @@ const TAB_VISUAL = {
   queryEditor: { icon: EditPen, color: '#10B981', active: '#047857', dark: '#34D399', darkActive: '#6EE7B7', tip: '查询编辑器' },
   relationManage: { icon: Connection, color: '#8B5CF6', active: '#6D28D9', dark: '#A78BFA', darkActive: '#C4B5FD', tip: '表关系' },
   connectionManage: { icon: Coin, color: '#64748B', active: '#334155', dark: '#94A3B8', darkActive: '#E2E8F0', tip: '连接管理' },
-  settings: { icon: Setting, color: '#475569', active: '#1E293B', dark: '#94A3B8', darkActive: '#F1F5F9', tip: '模型配置' },
   script: { icon: Document, color: '#F59E0B', active: '#B45309', dark: '#FBBF24', darkActive: '#FDE68A', tip: 'SQL 清单' },
   glossary: { icon: CollectionTag, color: '#06B6D4', active: '#0E7490', dark: '#22D3EE', darkActive: '#67E8F9', tip: '业务术语' },
   prompt: { icon: ChatLineSquare, color: '#EC4899', active: '#BE185D', dark: '#F472B6', darkActive: '#F9A8D4', tip: 'Prompt 配置' }

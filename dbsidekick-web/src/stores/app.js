@@ -4,11 +4,61 @@ import { text2sqlHealth, milvusHealth, embeddingHealth } from '../api/text2sql'
 
 let milvusRecheckTimer = null
 
-function readPanelOpen(key) {
+/** 左侧面板：无 localStorage 时默认展开 */
+function readLeftPanelOpen() {
   try {
-    return localStorage.getItem(key) !== '0'
+    const v = localStorage.getItem('dbsidekick.leftOpen')
+    if (v === null) return true
+    return v !== '0'
   } catch {
     return true
+  }
+}
+
+/** 右侧 SQL 清单：无 localStorage 时默认收缩；有历史值则沿用 */
+function readRightPanelOpen() {
+  try {
+    const v = localStorage.getItem('dbsidekick.rightOpen')
+    if (v === null) return false
+    return v !== '0'
+  } catch {
+    return false
+  }
+}
+
+const LEFT_WIDTH_MIN = 180
+const LEFT_WIDTH_MAX = 450
+const LEFT_WIDTH_DEFAULT = 240
+const RIGHT_WIDTH_MIN = 48
+const RIGHT_WIDTH_MAX = 500
+const RIGHT_WIDTH_DEFAULT = 240
+const RIGHT_COLLAPSE_SNAP = 80
+
+function clamp(n, min, max) {
+  return Math.min(max, Math.max(min, n))
+}
+
+function readLeftPanelWidth() {
+  try {
+    const raw = localStorage.getItem('dbsidekick.leftWidth')
+    if (raw == null) return LEFT_WIDTH_DEFAULT
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return LEFT_WIDTH_DEFAULT
+    return clamp(Math.round(n), LEFT_WIDTH_MIN, LEFT_WIDTH_MAX)
+  } catch {
+    return LEFT_WIDTH_DEFAULT
+  }
+}
+
+function readRightPanelWidth() {
+  try {
+    const raw = localStorage.getItem('dbsidekick.rightWidth')
+    if (raw == null) return RIGHT_WIDTH_DEFAULT
+    const n = Number(raw)
+    if (!Number.isFinite(n)) return RIGHT_WIDTH_DEFAULT
+    return clamp(Math.round(n), RIGHT_WIDTH_MIN, RIGHT_WIDTH_MAX)
+  } catch {
+    return RIGHT_WIDTH_DEFAULT
   }
 }
 
@@ -56,13 +106,26 @@ export const useAppStore = defineStore('app', {
       dbName: '',
       token: 0
     },
-    leftPanelOpen: readPanelOpen('dbsidekick.leftOpen'),
-    rightPanelOpen: readPanelOpen('dbsidekick.rightOpen'),
+    leftPanelOpen: readLeftPanelOpen(),
+    rightPanelOpen: readRightPanelOpen(),
+    /** 展开态宽度（折叠时 UI 仍用 48px） */
+    leftPanelWidth: readLeftPanelWidth(),
+    rightPanelWidth: readRightPanelWidth(),
     /** 折叠栏当前高亮：datasource / history / sql / settings */
     sidebarFocus: readRailSection(),
-    sidebarFocusToken: 0
+    sidebarFocusToken: 0,
+    /** 设置弹窗（不再占用中间 Tab） */
+    settingsDialog: {
+      open: false,
+      section: 'llm'
+    }
   }),
   getters: {
+    leftWidthMin: () => LEFT_WIDTH_MIN,
+    leftWidthMax: () => LEFT_WIDTH_MAX,
+    rightWidthMin: () => RIGHT_WIDTH_MIN,
+    rightWidthMax: () => RIGHT_WIDTH_MAX,
+    rightCollapseSnap: () => RIGHT_COLLAPSE_SNAP,
     currentDatasource(state) {
       return state.datasources.find((d) => d.id === state.currentDatasourceId) || null
     },
@@ -159,6 +222,67 @@ export const useAppStore = defineStore('app', {
     setRightPanelOpen(open) {
       this.rightPanelOpen = !!open
       localStorage.setItem('dbsidekick.rightOpen', this.rightPanelOpen ? '1' : '0')
+      if (this.rightPanelOpen && this.rightPanelWidth < RIGHT_COLLAPSE_SNAP) {
+        this.setRightPanelWidth(RIGHT_WIDTH_DEFAULT)
+      }
+    },
+    setLeftPanelWidth(width) {
+      const w = clamp(Math.round(Number(width) || LEFT_WIDTH_DEFAULT), LEFT_WIDTH_MIN, LEFT_WIDTH_MAX)
+      this.leftPanelWidth = w
+      try {
+        localStorage.setItem('dbsidekick.leftWidth', String(w))
+      } catch {
+        // ignore
+      }
+    },
+    setRightPanelWidth(width) {
+      const w = clamp(Math.round(Number(width) || RIGHT_WIDTH_DEFAULT), RIGHT_WIDTH_MIN, RIGHT_WIDTH_MAX)
+      this.rightPanelWidth = w
+      try {
+        localStorage.setItem('dbsidekick.rightWidth', String(w))
+      } catch {
+        // ignore
+      }
+    },
+    /** 拖拽过程中预览宽度（不写 localStorage）；mouseup 再持久化 */
+    previewLeftPanelWidth(width) {
+      this.leftPanelWidth = clamp(Math.round(Number(width) || LEFT_WIDTH_DEFAULT), LEFT_WIDTH_MIN, LEFT_WIDTH_MAX)
+    },
+    previewRightPanelWidth(width) {
+      this.rightPanelWidth = clamp(Math.round(Number(width) || RIGHT_WIDTH_DEFAULT), RIGHT_WIDTH_MIN, RIGHT_WIDTH_MAX)
+    },
+    commitLeftPanelWidth() {
+      this.setLeftPanelWidth(this.leftPanelWidth)
+    },
+    commitRightPanelWidth() {
+      if (this.rightPanelWidth <= RIGHT_COLLAPSE_SNAP) {
+        this.setRightPanelOpen(false)
+        // 折叠后保留默认展开宽度，下次点开不至于只有 48
+        this.rightPanelWidth = RIGHT_WIDTH_DEFAULT
+        try {
+          localStorage.setItem('dbsidekick.rightWidth', String(RIGHT_WIDTH_DEFAULT))
+        } catch {
+          // ignore
+        }
+        return
+      }
+      this.setRightPanelWidth(this.rightPanelWidth)
+      if (!this.rightPanelOpen) {
+        this.setRightPanelOpen(true)
+      }
+    },
+    openSettingsDialog(section = 'llm') {
+      const allowed = ['llm', 'embedding', 'milvus', 'sql', 'storage']
+      const sec = allowed.includes(section) ? section : 'llm'
+      this.settingsDialog = { open: true, section: sec }
+    },
+    setSettingsSection(section) {
+      const allowed = ['llm', 'embedding', 'milvus', 'sql', 'storage']
+      if (!allowed.includes(section)) return
+      this.settingsDialog = { ...this.settingsDialog, section }
+    },
+    closeSettingsDialog() {
+      this.settingsDialog = { ...this.settingsDialog, open: false }
     },
     focusSidebar(section) {
       const allowed = section === 'history' || section === 'sql' || section === 'settings' || section === 'datasource'

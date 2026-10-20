@@ -1,8 +1,36 @@
 <template>
-  <div class="settings-tab">
-    <el-tabs v-model="active" type="border-card" class="inner-tabs">
-      <el-tab-pane label="LLM 配置" name="llm">
-        <el-form label-width="120px" size="default" class="form">
+  <el-dialog
+    :model-value="appStore.settingsDialog.open"
+    title="设置"
+    width="900px"
+    align-center
+    append-to-body
+    destroy-on-close
+    class="settings-dialog"
+    modal-class="settings-dialog-mask"
+    @close="onClose"
+    @update:model-value="(v) => { if (!v) onClose() }"
+  >
+    <div class="settings-layout">
+      <aside class="settings-nav">
+        <el-menu
+          :key="'settings-nav-' + active"
+          :default-active="active"
+          class="nav-menu"
+          @select="onSelect"
+        >
+          <el-menu-item
+            v-for="item in menuItems"
+            :key="item.id"
+            :index="item.id"
+          >
+            {{ item.label }}
+          </el-menu-item>
+        </el-menu>
+      </aside>
+      <div class="settings-body" v-loading="loading">
+        <!-- LLM -->
+        <el-form v-show="active === 'llm'" label-width="120px" size="default" class="form">
           <el-form-item label="提供商">
             <el-select v-model="form.llmProvider" style="width: 280px" @change="onProviderChange">
               <el-option label="DeepSeek" value="DEEPSEEK" />
@@ -40,7 +68,7 @@
               placeholder="gpt-4o-mini"
               style="width: 320px"
             />
-            <p v-if="openaiCompatible" class="field-hint">
+            <p v-if="openaiCompatible" class="field-hint block-hint">
               填写服务商文档中的模型名，如 gpt-4o-mini / qwen-plus / llama3.1
             </p>
           </el-form-item>
@@ -53,10 +81,9 @@
             <span v-if="llmTestMsg" class="hint" :class="llmTestOk ? 'ok' : 'fail'">{{ llmTestMsg }}</span>
           </el-form-item>
         </el-form>
-      </el-tab-pane>
 
-      <el-tab-pane label="Embedding 配置" name="embedding">
-        <el-form label-width="130px" size="default" class="form">
+        <!-- Embedding -->
+        <el-form v-show="active === 'embedding'" label-width="130px" size="default" class="form">
           <el-form-item label="提供商">
             <el-select v-model="form.embProvider" style="width: 280px">
               <el-option label="ONNX" value="onnx" />
@@ -89,10 +116,9 @@
             <span v-if="embTestMsg" class="hint" :class="embTestOk ? 'ok' : 'fail'">{{ embTestMsg }}</span>
           </el-form-item>
         </el-form>
-      </el-tab-pane>
 
-      <el-tab-pane label="Milvus 配置" name="milvus">
-        <el-form label-width="120px" size="default" class="form">
+        <!-- Milvus -->
+        <el-form v-show="active === 'milvus'" label-width="120px" size="default" class="form">
           <el-form-item label="Host">
             <el-input v-model="form.milvusHost" style="width: 280px" />
           </el-form-item>
@@ -111,10 +137,9 @@
             <span v-if="milvusTestMsg" class="hint" :class="milvusTestOk ? 'ok' : 'fail'">{{ milvusTestMsg }}</span>
           </el-form-item>
         </el-form>
-      </el-tab-pane>
 
-      <el-tab-pane label="SQL 配置" name="sql">
-        <el-form label-width="160px" size="default" class="form">
+        <!-- SQL -->
+        <el-form v-show="active === 'sql'" label-width="160px" size="default" class="form">
           <el-form-item label="默认 LIMIT 开关">
             <el-switch v-model="form.sqlLimitEnabled" active-text="开启" inactive-text="关闭" />
           </el-form-item>
@@ -139,10 +164,9 @@
             <el-button type="primary" :loading="saving" @click="onSaveSql">保存</el-button>
           </el-form-item>
         </el-form>
-      </el-tab-pane>
 
-      <el-tab-pane label="本地存储" name="storage">
-        <el-form label-width="120px" size="default" class="form">
+        <!-- Storage -->
+        <el-form v-show="active === 'storage'" label-width="120px" size="default" class="form">
           <el-form-item label="数据库路径">
             <el-input :model-value="dbPath" readonly />
           </el-form-item>
@@ -150,13 +174,13 @@
             <el-button @click="onOpenDir">打开所在目录</el-button>
           </el-form-item>
         </el-form>
-      </el-tab-pane>
-    </el-tabs>
-  </div>
+      </div>
+    </div>
+  </el-dialog>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   getSettings,
@@ -164,15 +188,23 @@ import {
   testEmbedding,
   testLlm,
   updateSettings
-} from '../../api/settings'
-import { milvusHealth } from '../../api/text2sql'
-import { pickOnnxModelDir } from '../../api/system'
+} from '../api/settings'
+import { milvusHealth } from '../api/text2sql'
+import { pickOnnxModelDir } from '../api/system'
+import { useAppStore } from '../stores/app'
 
-const props = defineProps({
-  tab: { type: Object, default: null }
-})
+const appStore = useAppStore()
+
+const menuItems = [
+  { id: 'llm', label: 'LLM 配置' },
+  { id: 'embedding', label: 'Embedding 配置' },
+  { id: 'milvus', label: 'Milvus 配置' },
+  { id: 'sql', label: 'SQL 配置' },
+  { id: 'storage', label: '本地存储' }
+]
 
 const active = ref('llm')
+const loading = ref(false)
 const saving = ref(false)
 const testingLlm = ref(false)
 const testingEmb = ref(false)
@@ -220,6 +252,15 @@ const apiKeyPlaceholder = computed(() => {
     : '请输入 API Key'
 })
 
+function onSelect(index) {
+  active.value = index
+  appStore.setSettingsSection(index)
+}
+
+function onClose() {
+  appStore.closeSettingsDialog()
+}
+
 function displayModel(provider, raw) {
   const m = String(raw || '').trim()
   if (provider === 'OPENAI_COMPATIBLE') return m
@@ -244,27 +285,32 @@ function onProviderChange(value) {
 }
 
 async function load() {
-  const s = await getSettings()
-  form.llmProvider = s['llm.provider'] || 'DEEPSEEK'
-  form.llmBaseUrl = s['llm.baseUrl'] || (form.llmProvider === 'OPENAI_COMPATIBLE' ? '' : 'https://api.deepseek.com')
-  form.llmApiKey = ''
-  form.llmModel = displayModel(form.llmProvider, s['llm.model'])
-  form.llmTemperature = Number(s['llm.temperature'] ?? 0.1)
-  form.embProvider = (s['embedding.provider'] || 'onnx').toLowerCase()
-  form.embOnnxPath = s['embedding.onnxModelPath'] || form.embOnnxPath
-  form.embOllamaUrl = s['embedding.ollamaUrl'] || form.embOllamaUrl
-  form.embOllamaModel = s['embedding.ollamaModel'] || form.embOllamaModel
-  form.embDimension = Number(s['embedding.dimension'] ?? 768)
-  form.milvusHost = s['milvus.host'] || 'localhost'
-  form.milvusPort = Number(s['milvus.port'] ?? 19530)
-  form.milvusCollection = s['milvus.collection'] || 'schema_chunks'
-  const limRaw = String(s['sql.limitEnabled'] ?? 'true').trim().toLowerCase()
-  form.sqlLimitEnabled = limRaw !== 'false' && limRaw !== '0'
-  form.sqlDefaultLimit = Number(s['sql.defaultLimit'] ?? 100)
-  form.sqlMaxStatements = Number(s['sql.maxStatements'] ?? 20)
-  form.sqlQueryTimeout = Number(s['sql.queryTimeoutSeconds'] ?? 30)
-  dbPath.value = s.dbPath || ''
-  apiKeyConfigured.value = !!s['llm.apiKeyConfigured']
+  loading.value = true
+  try {
+    const s = await getSettings()
+    form.llmProvider = s['llm.provider'] || 'DEEPSEEK'
+    form.llmBaseUrl = s['llm.baseUrl'] || (form.llmProvider === 'OPENAI_COMPATIBLE' ? '' : 'https://api.deepseek.com')
+    form.llmApiKey = ''
+    form.llmModel = displayModel(form.llmProvider, s['llm.model'])
+    form.llmTemperature = Number(s['llm.temperature'] ?? 0.1)
+    form.embProvider = (s['embedding.provider'] || 'onnx').toLowerCase()
+    form.embOnnxPath = s['embedding.onnxModelPath'] || form.embOnnxPath
+    form.embOllamaUrl = s['embedding.ollamaUrl'] || form.embOllamaUrl
+    form.embOllamaModel = s['embedding.ollamaModel'] || form.embOllamaModel
+    form.embDimension = Number(s['embedding.dimension'] ?? 768)
+    form.milvusHost = s['milvus.host'] || 'localhost'
+    form.milvusPort = Number(s['milvus.port'] ?? 19530)
+    form.milvusCollection = s['milvus.collection'] || 'schema_chunks'
+    const limRaw = String(s['sql.limitEnabled'] ?? 'true').trim().toLowerCase()
+    form.sqlLimitEnabled = limRaw !== 'false' && limRaw !== '0'
+    form.sqlDefaultLimit = Number(s['sql.defaultLimit'] ?? 100)
+    form.sqlMaxStatements = Number(s['sql.maxStatements'] ?? 20)
+    form.sqlQueryTimeout = Number(s['sql.queryTimeoutSeconds'] ?? 30)
+    dbPath.value = s.dbPath || ''
+    apiKeyConfigured.value = !!s['llm.apiKeyConfigured']
+  } finally {
+    loading.value = false
+  }
 }
 
 async function onSaveLlm() {
@@ -440,29 +486,76 @@ async function onOpenDir() {
 }
 
 watch(
-  () => props.tab?.props?.section,
-  (sec) => {
-    if (sec) active.value = sec
-  },
-  { immediate: true }
+  () => appStore.settingsDialog.open,
+  async (open) => {
+    if (!open) return
+    const sec = appStore.settingsDialog.section || 'llm'
+    active.value = menuItems.some((m) => m.id === sec) ? sec : 'llm'
+    llmTestMsg.value = ''
+    embTestMsg.value = ''
+    milvusTestMsg.value = ''
+    await load()
+  }
 )
 
-onMounted(load)
+watch(
+  () => appStore.settingsDialog.section,
+  (sec) => {
+    if (!sec || !appStore.settingsDialog.open) return
+    if (menuItems.some((m) => m.id === sec)) {
+      active.value = sec
+    }
+  }
+)
 </script>
 
 <style scoped>
-.settings-tab {
-  height: 100%;
-  padding: 12px;
-  box-sizing: border-box;
-  overflow: auto;
+.settings-layout {
+  display: flex;
+  height: 520px;
+  margin: -8px -16px -12px;
+  border-top: 1px solid var(--sk-border, #e2e8f0);
 }
-.inner-tabs {
-  min-height: 420px;
+.settings-nav {
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--sk-bg-sidebar, #f8fafc);
+  border-right: 1px solid var(--sk-border, #e2e8f0);
+  overflow: hidden;
+}
+.nav-menu {
+  border-right: none;
+  background: transparent;
+  height: 100%;
+  padding: 8px 0;
+}
+.nav-menu :deep(.el-menu-item) {
+  height: 40px;
+  line-height: 40px;
+  margin: 2px 8px;
+  border-radius: 6px;
+  color: var(--sk-text-primary, #334155);
+}
+.nav-menu :deep(.el-menu-item.is-active) {
+  background: var(--sk-primary, #3b82f6) !important;
+  color: #fff !important;
+}
+.nav-menu :deep(.el-menu-item:hover:not(.is-active)) {
+  background: var(--sk-bg, #f1f5f9);
+}
+.settings-body {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 24px;
+  background: var(--sk-bg-elevated, #ffffff);
+  box-sizing: border-box;
 }
 .form {
-  max-width: 720px;
-  padding-top: 8px;
+  max-width: 640px;
+}
+.form :deep(.el-form-item) {
+  margin-bottom: 20px;
 }
 .hint {
   margin-left: 12px;
@@ -475,17 +568,13 @@ onMounted(load)
   color: var(--sk-danger);
 }
 .field-hint {
-  margin: 6px 0 0;
-  color: var(--sk-text-tertiary);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.field-hint {
   margin-left: 12px;
   font-size: 12px;
   color: var(--sk-text-tertiary);
+  line-height: 1.5;
 }
 .field-hint.block-hint {
+  display: block;
   margin-left: 0;
   margin-top: 6px;
 }
@@ -496,5 +585,34 @@ onMounted(load)
 }
 .path-row .el-input {
   flex: 1;
+}
+</style>
+
+<style>
+.settings-dialog-mask {
+  background: rgba(0, 0, 0, 0.4) !important;
+}
+.settings-dialog.el-dialog {
+  background: var(--sk-bg-elevated, #ffffff);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.settings-dialog .el-dialog__header {
+  margin-right: 0;
+  padding: 14px 20px;
+  border-bottom: none;
+}
+.settings-dialog .el-dialog__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--sk-text-primary, #0f172a);
+}
+.settings-dialog .el-dialog__body {
+  padding: 0 16px 12px;
+  color: var(--sk-text-primary);
+}
+.settings-dialog .el-dialog__headerbtn {
+  top: 14px;
+  right: 16px;
 }
 </style>

@@ -36,41 +36,65 @@
       @node-contextmenu="onContextMenu"
     >
       <template #default="{ data }">
-        <span
+        <el-tooltip
           v-if="data.nodeType === 'datasource'"
-          class="ds-node"
-          :class="{ busy: busyId === data.datasourceId }"
+          :content="String(data.label || '')"
+          placement="right"
+          :show-after="500"
+          :disabled="!data.label"
         >
-          <span class="status-dot" :class="dsDot(data)" />
-          <el-icon class="type-icon" :class="dsKind(data)"><Coin /></el-icon>
-          <span class="name">{{ data.label }}</span>
-          <span v-if="dbCount(data) != null" class="db-badge" :title="`${dbCount(data)} 个库`">{{ dbCount(data) }}</span>
-          <el-icon v-if="busyId === data.datasourceId" class="spin"><Loading /></el-icon>
-          <el-tag v-if="data.unsynced" type="danger" size="small" effect="plain" class="unsync">未同步</el-tag>
-          <button type="button" class="node-refresh" title="刷新" @click.stop="onRefreshNode(data)">
-            <el-icon><Refresh /></el-icon>
-          </button>
-        </span>
-        <span
-          v-else-if="data.nodeType === 'database'"
-          class="ds-node db-node"
-          :class="{ current: isCurrentDb(data), busy: busyId === data.id }"
-        >
-          <el-icon class="node-kind"><Folder /></el-icon>
-          <span class="name">{{ data.label }}</span>
-          <span v-if="data.tableCount != null" class="meta">{{ data.tableCount }} 张表</span>
-          <el-icon v-if="busyId === data.id" class="spin"><Loading /></el-icon>
-          <button type="button" class="node-refresh" title="同步此库" @click.stop="onRefreshDatabase(data)">
-            <el-icon><Refresh /></el-icon>
-          </button>
-        </span>
-        <span v-else class="tree-node">
-          <el-icon class="node-kind"><Document /></el-icon>
-          <span class="label">{{ data.label }}</span>
-          <span v-if="data.nodeType === 'table' && data.tableComment" class="comment">
-            {{ data.tableComment }}
+          <span
+            class="ds-node"
+            :class="{ busy: busyId === data.datasourceId }"
+          >
+            <span class="status-dot" :class="dsDot(data)" />
+            <el-icon class="type-icon" :class="dsKind(data)"><Coin /></el-icon>
+            <span class="name">{{ data.label }}</span>
+            <span v-if="dbCount(data) != null" class="db-badge" :title="`${dbCount(data)} 个库`">{{ dbCount(data) }}</span>
+            <el-icon v-if="busyId === data.datasourceId" class="spin"><Loading /></el-icon>
+            <el-tag v-if="data.unsynced" type="danger" size="small" effect="plain" class="unsync">未同步</el-tag>
+            <button type="button" class="node-refresh" title="刷新" @click.stop="onRefreshNode(data)">
+              <el-icon><Refresh /></el-icon>
+            </button>
           </span>
-        </span>
+        </el-tooltip>
+        <el-tooltip
+          v-else-if="data.nodeType === 'database'"
+          :content="String(data.label || '')"
+          placement="right"
+          :show-after="500"
+          :disabled="!data.label"
+        >
+          <span
+            class="ds-node db-node"
+            :class="{ current: isCurrentDb(data), busy: busyId === data.id }"
+          >
+            <el-icon class="node-kind"><Folder /></el-icon>
+            <span class="name">{{ data.label }}</span>
+            <span v-if="data.tableCount != null" class="meta">{{ data.tableCount }} 张表</span>
+            <el-icon v-if="busyId === data.id" class="spin"><Loading /></el-icon>
+            <button type="button" class="node-refresh" title="同步此库" @click.stop="onRefreshDatabase(data)">
+              <el-icon><Refresh /></el-icon>
+            </button>
+          </span>
+        </el-tooltip>
+        <el-tooltip
+          v-else
+          placement="right"
+          :show-after="500"
+          :disabled="!treeNodeTip(data)"
+        >
+          <template #content>
+            <div class="tree-tip">{{ treeNodeTip(data) }}</div>
+          </template>
+          <span class="tree-node">
+            <el-icon class="node-kind"><Document /></el-icon>
+            <span class="label">{{ data.label }}</span>
+            <span v-if="data.nodeType === 'table' && data.tableComment" class="comment">
+              {{ data.tableComment }}
+            </span>
+          </span>
+        </el-tooltip>
       </template>
     </el-tree>
     <div v-else-if="!refreshing" class="empty">
@@ -123,9 +147,9 @@
             @click="openSession(s)"
             @contextmenu.prevent="onSessionCtx($event, s)"
           >
-            <el-tooltip :content="s.title || '新会话'" placement="top" :show-after="300">
-              <span class="title">{{ s.title || '新会话' }}</span>
-            </el-tooltip>
+            <span class="title-wrap">
+              <span class="title" :data-full="s.title || '新会话'">{{ s.title || '新会话' }}</span>
+            </span>
             <span class="meta">{{ s.messageCount || 0 }} 条 · {{ formatRelative(s.updatedAt) }}</span>
             <button type="button" class="more" title="更多" @click.stop="onSessionCtx($event, s)">⋯</button>
           </li>
@@ -352,6 +376,17 @@ const filteredSessions = computed(() => {
   if (!q) return sessions.value
   return sessions.value.filter((s) => String(s.title || '新会话').toLowerCase().includes(q))
 })
+
+function treeNodeTip(data) {
+  if (!data) return ''
+  const name = String(data.label || '').trim()
+  const comment = String(data.tableComment || data.comment || '').trim()
+  if (data.nodeType === 'table') {
+    if (name && comment) return `${name}\n${comment}`
+    return name || comment
+  }
+  return name
+}
 
 const sessionGroups = computed(() => {
   const now = new Date()
@@ -1265,23 +1300,9 @@ watch(
   overflow: auto;
   flex: 1;
   min-height: 0;
-  scrollbar-width: thin;
-  scrollbar-color: var(--sk-text-tertiary) transparent;
-}
-.session-list::-webkit-scrollbar {
-  width: 6px;
-}
-.session-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-.session-list::-webkit-scrollbar-thumb {
-  background: var(--sk-text-tertiary);
-  border-radius: 6px;
-}
-.session-list::-webkit-scrollbar-thumb:hover {
-  background: var(--sk-text-tertiary);
 }
 .session-item {
+  position: relative;
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
@@ -1298,16 +1319,19 @@ watch(
 }
 .session-item:hover {
   background: var(--sk-hover-bg);
+  overflow: visible;
+  z-index: 2;
 }
 .session-item.active {
   background: var(--sk-active-bg);
   box-shadow: inset 3px 0 0 var(--sk-primary);
 }
-.session-item :deep(.el-tooltip__trigger) {
+.session-item .title-wrap {
   flex: 1 1 auto;
   min-width: 0;
+  position: relative;
+  height: 32px;
   overflow: hidden;
-  display: block;
 }
 .session-item .title {
   display: block;
@@ -1319,6 +1343,24 @@ watch(
   line-height: 32px;
   color: var(--sk-text-primary);
 }
+/* 方案 A：悬停时标题横向伸展盖住右侧元信息 */
+.session-item:hover .title {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: max-content;
+  max-width: calc(100% + 108px);
+  padding-right: 28px;
+  overflow: visible;
+  text-overflow: clip;
+  background: var(--sk-hover-bg);
+  z-index: 2;
+  box-shadow: 8px 0 8px -4px var(--sk-hover-bg);
+}
+.session-item.active:hover .title {
+  background: var(--sk-active-bg);
+  box-shadow: 8px 0 8px -4px var(--sk-active-bg);
+}
 .session-item .meta {
   flex: 0 0 88px;
   width: 88px;
@@ -1329,6 +1371,10 @@ watch(
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  transition: opacity 0.15s;
+}
+.session-item:hover .meta {
+  opacity: 0;
 }
 .session-item .more {
   width: 0;
@@ -1343,6 +1389,8 @@ watch(
   overflow: hidden;
   line-height: 20px;
   flex-shrink: 0;
+  position: relative;
+  z-index: 3;
 }
 .session-item:hover .more,
 .session-item:focus-within .more {
@@ -1468,8 +1516,21 @@ watch(
   justify-content: center;
   transition: opacity 0.15s, background 0.15s;
 }
-.ds-node:hover .node-refresh {
+.ds-node:hover .node-refresh,
+.tree-wrap :deep(.el-tree-node__content:hover) .node-refresh {
   opacity: 1;
+}
+.tree-wrap :deep(.el-tooltip__trigger) {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  overflow: hidden;
+}
+.tree-tip {
+  max-width: 320px;
+  white-space: pre-line;
+  line-height: 1.45;
+  font-size: 12px;
 }
 .node-refresh:hover {
   background: var(--sk-bg);

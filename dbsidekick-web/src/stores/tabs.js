@@ -5,7 +5,7 @@ function nextId() {
   return `tab-${Date.now()}-${seq++}`
 }
 
-/** @typedef {'aiChat'|'queryEditor'|'connectionManage'|'settings'|'relationManage'} TabType */
+/** @typedef {'aiChat'|'queryEditor'|'connectionManage'|'relationManage'} TabType */
 
 export const useTabsStore = defineStore('tabs', {
   state: () => ({
@@ -18,6 +18,11 @@ export const useTabsStore = defineStore('tabs', {
     }
   },
   actions: {
+    /** 关闭遗留的配置类 Tab（已改为弹窗） */
+    closeSettingsTabs() {
+      const ids = this.tabs.filter((t) => t.type === 'settings').map((t) => t.id)
+      ids.forEach((id) => this.closeTab(id))
+    },
     /**
      * @param {TabType} type
      * @param {object} [props]
@@ -29,7 +34,6 @@ export const useTabsStore = defineStore('tabs', {
         aiChat: 'AI会话: 新会话',
         queryEditor: '查询编辑器',
         connectionManage: '连接管理',
-        settings: '设置',
         relationManage: '表关系管理'
       }
       const tab = {
@@ -65,21 +69,6 @@ export const useTabsStore = defineStore('tabs', {
           scriptId: scriptId || null
         },
         { title: title || '查询编辑器' }
-      )
-    },
-    openSettings({ section } = {}) {
-      const existing = this.tabs.find((t) => t.type === 'settings')
-      if (existing) {
-        this.activeId = existing.id
-        this.updateTab(existing.id, {
-          props: { ...existing.props, section: section || existing.props?.section || 'llm' }
-        })
-        return existing
-      }
-      return this.addTab(
-        'settings',
-        { section: section || 'llm' },
-        { title: '模型配置' }
       )
     },
     openRelationManage({ datasourceId, dbName } = {}) {

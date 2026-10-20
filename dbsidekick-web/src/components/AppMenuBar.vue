@@ -326,13 +326,15 @@ async function onOpenLogDir() {
 }
 
 function onConfig(cmd) {
-  if (cmd === 'model') {
-    tabsStore.openSettings({ section: 'llm' })
-  } else if (cmd === 'sql') {
-    tabsStore.openSettings({ section: 'sql' })
-  } else if (cmd === 'storage') {
-    tabsStore.openSettings({ section: 'storage' })
+  const sectionMap = {
+    model: 'llm',
+    sql: 'sql',
+    storage: 'storage'
   }
+  const section = sectionMap[cmd]
+  if (!section) return
+  tabsStore.closeSettingsTabs()
+  appStore.openSettingsDialog(section)
 }
 
 onMounted(() => {
