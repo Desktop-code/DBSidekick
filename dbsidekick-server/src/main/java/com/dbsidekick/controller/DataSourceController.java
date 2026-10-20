@@ -1,11 +1,14 @@
 package com.dbsidekick.controller;
 
+import com.dbsidekick.ai.milvus.MilvusSchemaStore;
 import com.dbsidekick.datasource.DbConfig;
 import com.dbsidekick.datasource.DynamicDataSourceManager;
 import com.dbsidekick.schema.SchemaSyncService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,13 +23,18 @@ import org.springframework.web.server.ResponseStatusException;
 @RequestMapping("/api/datasource")
 public class DataSourceController {
 
+    private static final Logger log = LoggerFactory.getLogger(DataSourceController.class);
+
     private final DynamicDataSourceManager dataSourceManager;
     private final SchemaSyncService schemaSyncService;
+    private final MilvusSchemaStore milvusSchemaStore;
 
     public DataSourceController(DynamicDataSourceManager dataSourceManager,
-                                SchemaSyncService schemaSyncService) {
+                                SchemaSyncService schemaSyncService,
+                                MilvusSchemaStore milvusSchemaStore) {
         this.dataSourceManager = dataSourceManager;
         this.schemaSyncService = schemaSyncService;
+        this.milvusSchemaStore = milvusSchemaStore;
     }
 
     @PostMapping("/add")
@@ -77,13 +85,39 @@ public class DataSourceController {
     @GetMapping("/{id}/delete-check")
     public Map<String, Object> deleteCheck(@PathVariable("id") String id) {
         try {
-            return dataSourceManager.deleteCheck(id);
+            Map<String, Object> body = dataSourceManager.deleteCheck(id);
+            long milvusVectorCount = 0L;
+            try {
+                milvusVectorCount = milvusSchemaStore.countByDatasource(id);
+            } catch (Exception ex) {
+                log.warn("[Sidekick] delete-check milvus count failed: {}", ex.getMessage());
+            }
+            int schemaTableCount = intVal(body.get("schemaTableCount"));
+            int sessionCount = intVal(body.get("sessionCount"));
+            int scriptCount = intVal(body.get("scriptCount"));
+            body.put("milvusVectorCount", milvusVectorCount);
+            body.put("warning", deleteWarning(schemaTableCount, milvusVectorCount, sessionCount, scriptCount));
+            return body;
         } catch (IllegalArgumentException ex) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, ex.getMessage());
         } catch (Exception ex) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
                     ex.getMessage() == null ? "预检失败" : ex.getMessage(), ex);
         }
+    }
+
+    private static int intVal(Object value) {
+        return value instanceof Number number ? number.intValue() : 0;
+    }
+
+    private static String deleteWarning(int schemaTableCount, long milvusVectorCount,
+                                        int sessionCount, int scriptCount) {
+        if (schemaTableCount == 0 && milvusVectorCount == 0 && sessionCount == 0 && scriptCount == 0) {
+            return "";
+        }
+        return String.format(
+                "将同时删除 %d 张表的结构、%d 条向量索引；%d 个会话和 %d 个脚本将失去关联数据源",
+                schemaTableCount, milvusVectorCount, sessionCount, scriptCount);
     }
 
     /** 实例下的业务库。会话创建和切库弹窗都用这份列表。 */

@@ -1,8 +1,7 @@
 package com.dbsidekick.datasource;
 
-import com.dbsidekick.ai.milvus.MilvusSchemaStore;
 import com.dbsidekick.config.SqliteInitializer;
-import com.dbsidekick.relation.RelationUsageService;
+import com.dbsidekick.datasource.event.DataSourceDeletedEvent;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import jakarta.annotation.PostConstruct;
@@ -20,7 +19,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Lazy;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -33,17 +32,14 @@ public class DynamicDataSourceManager {
     private static final Logger log = LoggerFactory.getLogger(DynamicDataSourceManager.class);
 
     private final SqliteInitializer sqliteInitializer;
-    private final MilvusSchemaStore milvusSchemaStore;
-    private final RelationUsageService relationUsageService;
+    private final ApplicationEventPublisher eventPublisher;
     private final ConcurrentHashMap<String, HikariDataSource> pools = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, DbConfig> configs = new ConcurrentHashMap<>();
 
     public DynamicDataSourceManager(SqliteInitializer sqliteInitializer,
-                                    @Lazy MilvusSchemaStore milvusSchemaStore,
-                                    @Lazy RelationUsageService relationUsageService) {
+                                    ApplicationEventPublisher eventPublisher) {
         this.sqliteInitializer = sqliteInitializer;
-        this.milvusSchemaStore = milvusSchemaStore;
-        this.relationUsageService = relationUsageService;
+        this.eventPublisher = eventPublisher;
     }
 
     @PostConstruct
@@ -124,26 +120,13 @@ public class DynamicDataSourceManager {
             throw new IllegalArgumentException("数据源 id 不能为空");
         }
         String dsId = id.trim();
-        // 1) Milvus 向量
-        try {
-            long deleted = milvusSchemaStore.deleteByDatasource(dsId);
-            log.info("[Sidekick] deleted milvus vectors for datasource={} count={}", dsId, deleted);
-        } catch (Exception ex) {
-            log.warn("[Sidekick] milvus cleanup on delete failed: {}", ex.getMessage());
-        }
-        // 2) 连接池
         HikariDataSource ds = pools.remove(dsId);
         configs.remove(dsId);
         if (ds != null) {
             ds.close();
         }
-        // 3) SQLite schema_* + relation_usage + db_connection（保留 session/script）
-        try {
-            relationUsageService.deleteByDatasource(dsId);
-        } catch (Exception ex) {
-            log.warn("[Sidekick] relation_usage cleanup on delete failed: {}", ex.getMessage());
-        }
         deleteDbAndSchema(dsId);
+        eventPublisher.publishEvent(new DataSourceDeletedEvent(this, dsId));
     }
 
     /** 删除前预检：关联数据量。 */
@@ -158,11 +141,6 @@ public class DynamicDataSourceManager {
         int schemaTableCount = countSql(
                 "SELECT COUNT(*) FROM schema_table WHERE datasource_id = ?", dsId);
         long milvusVectorCount = 0L;
-        try {
-            milvusVectorCount = milvusSchemaStore.countByDatasource(dsId);
-        } catch (Exception ex) {
-            log.warn("[Sidekick] delete-check milvus count failed: {}", ex.getMessage());
-        }
         int sessionCount = countSql(
                 "SELECT COUNT(*) FROM chat_session WHERE datasource_id = ?", dsId);
         int scriptCount = countSql(
