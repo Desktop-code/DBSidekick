@@ -86,7 +86,7 @@ class RelationFeedbackTest {
         config.seedMissing();
         config.set("confidence-threshold", "6");
         config.set("require-strong-signal", "true");
-        RelationUsageService usage = new RelationUsageService(sqlite, new JoinExtractor(config), config);
+        RelationUsageService usage = newUsage(sqlite, config);
 
         String ds = "ds-test";
         UsageContext ok = new UsageContext(true, 12, false, false);
@@ -106,7 +106,7 @@ class RelationFeedbackTest {
         config.seedMissing();
         config.set("confidence-threshold", "6");
         config.set("require-strong-signal", "true");
-        RelationUsageService usage = new RelationUsageService(sqlite, new JoinExtractor(config), config);
+        RelationUsageService usage = newUsage(sqlite, config);
 
         String ds = "ds-like";
         seedPair(sqlite, ds);
@@ -129,7 +129,7 @@ class RelationFeedbackTest {
         RelationConfigService config = new RelationConfigService(sqlite, new SidekickProperties());
         config.seedMissing();
         config.set("max-consecutive-dislikes", "3");
-        RelationUsageService usage = new RelationUsageService(sqlite, new JoinExtractor(config), config);
+        RelationUsageService usage = newUsage(sqlite, config);
 
         String ds = "ds-dislike";
         seedPair(sqlite, ds);
@@ -154,7 +154,7 @@ class RelationFeedbackTest {
 
         SqliteInitializer sqlite = new SqliteInitializer(testDb);
         RelationConfigService config = new RelationConfigService(sqlite, new SidekickProperties());
-        RelationUsageService usage = new RelationUsageService(sqlite, new JoinExtractor(config), config);
+        RelationUsageService usage = newUsage(sqlite, config);
         usage.migrateLegacyInferred();
 
         try (Connection conn = sqlite.open()) {
@@ -162,6 +162,15 @@ class RelationFeedbackTest {
             assertEquals("true", scalar(conn, "SELECT value FROM app_settings WHERE key='relation_migrated'"));
             assertEquals("true", scalar(conn, "SELECT value FROM app_settings WHERE key='relation_v2_migrated'"));
         }
+    }
+
+    private static RelationUsageService newUsage(SqliteInitializer sqlite, RelationConfigService config) {
+        RelationUsageRepository repository = new RelationUsageRepository(sqlite);
+        return new RelationUsageService(
+                repository,
+                new RelationScorePolicy(config),
+                new RelationGraphAssembler(repository),
+                new JoinExtractor(config));
     }
 
     private static void seedPair(SqliteInitializer sqlite, String ds) throws Exception {

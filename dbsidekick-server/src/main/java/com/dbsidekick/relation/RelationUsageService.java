@@ -1,19 +1,12 @@
 package com.dbsidekick.relation;
 
-import com.dbsidekick.config.SqliteInitializer;
+import com.dbsidekick.relation.RelationUsageRepository.InferredFkRow;
 import jakarta.annotation.PostConstruct;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -23,7 +16,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 /**
- * 隐式反馈关系库：记录 JOIN 使用、晋升 CONFIRMED。
+ * 关系用量门面：编排抽取、计分、落库和 ER 图。
+ * 原方法体逐行注释在 {@code com.dbsidekick.relation.legacy}，待人工确认后清理。
  */
 @Service
 public class RelationUsageService {
@@ -32,100 +26,51 @@ public class RelationUsageService {
     private static final DateTimeFormatter TS =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
 
-    private final SqliteInitializer sqliteInitializer;
+    private final RelationUsageRepository repository;
+    private final RelationScorePolicy scorePolicy;
+    private final RelationGraphAssembler graphAssembler;
     private final JoinExtractor joinExtractor;
-    private final RelationConfigService relationConfigService;
-
-    public RelationUsageService(SqliteInitializer sqliteInitializer,
-                                JoinExtractor joinExtractor,
-                                RelationConfigService relationConfigService) {
-        this.sqliteInitializer = sqliteInitializer;
+    public RelationUsageService(RelationUsageRepository repository, RelationScorePolicy scorePolicy,
+                                RelationGraphAssembler graphAssembler, JoinExtractor joinExtractor) {
+        this.repository = repository;
+        this.scorePolicy = scorePolicy;
+        this.graphAssembler = graphAssembler;
         this.joinExtractor = joinExtractor;
-        this.relationConfigService = relationConfigService;
     }
-
-    /**
-     * relation_usage 为空时，把旧的 schema_column.is_inferred 迁入 PENDING。
-     * app_settings.relation_migrated=true 后不再执行。
-     */
+    /** 空库时把旧推断迁入 PENDING。relation_migrated=true 时直接返回，不再跑 v2。 */
     @PostConstruct
     public void migrateLegacyInferred() {
-        try (Connection conn = sqliteInitializer.open()) {
-            if (settingIsTrue(conn, "relation_migrated")) {
+        try {
+            if (repository.settingIsTrue("relation_migrated")) {
                 return;
             }
-            int n = 0;
-            if (countAll(conn) == 0) {
-                n = copyInferredRows(conn);
-            }
-            writeSetting(conn, "relation_migrated", "true");
-            if (n > 0) {
-                log.info("[Sidekick] migrated {} inferred relations to relation_usage", n);
+            int copied = repository.countAll() == 0 ? copyInferredRows() : 0;
+            repository.writeSetting("relation_migrated", "true");
+            if (copied > 0) {
+                log.info("[Sidekick] migrated {} inferred relations to relation_usage", copied);
             }
         } catch (Exception ex) {
             log.warn("[Sidekick] inferred relation migration skipped: {}", ex.getMessage());
         }
         migrateV2ConfidenceRules();
     }
-
-    /**
-     * 置信度 v2：只靠 USED 堆分的 CONFIRMED 降回 PENDING；阈值默认提到 6。
-     * app_settings.relation_v2_migrated=true 后只跑一次。
-     */
+    /** 无强信号的 CONFIRMED 降回 PENDING；旧默认阈值 3 抬到 6。只跑一次。 */
     void migrateV2ConfidenceRules() {
-        try (Connection conn = sqliteInitializer.open()) {
-            if (settingIsTrue(conn, "relation_v2_migrated")) {
+        try {
+            if (repository.settingIsTrue("relation_v2_migrated")) {
                 return;
             }
-            int demoted = demoteUsedOnlyConfirmed(conn);
-            bumpThresholdIfOldDefault(conn);
-            writeSetting(conn, "relation_v2_migrated", "true");
+            int demoted = demoteConfirmedWithoutStrongSignal();
+            if (scorePolicy.shouldBumpLegacyThreshold(repository.readConfig("confidence-threshold"))) {
+                repository.writeConfig("confidence-threshold", "6");
+            }
+            repository.writeSetting("relation_v2_migrated", "true");
             log.info("[Sidekick] relation v2 migration done, demoted={}", demoted);
         } catch (Exception ex) {
             log.warn("[Sidekick] relation v2 migration skipped: {}", ex.getMessage());
         }
     }
-
-    private int demoteUsedOnlyConfirmed(Connection conn) throws Exception {
-        String sql = """
-                UPDATE relation_usage
-                SET status = 'PENDING'
-                WHERE status = 'CONFIRMED'
-                  AND (sources IS NULL OR (
-                    UPPER(',' || REPLACE(IFNULL(sources, ''), ' ', '') || ',') NOT LIKE '%,MANUAL,%'
-                    AND UPPER(',' || REPLACE(IFNULL(sources, ''), ' ', '') || ',') NOT LIKE '%,SAVED,%'
-                    AND UPPER(',' || REPLACE(IFNULL(sources, ''), ' ', '') || ',') NOT LIKE '%,LIKED,%'
-                  ))
-                """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            return ps.executeUpdate();
-        }
-    }
-
-    private void bumpThresholdIfOldDefault(Connection conn) throws Exception {
-        try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT value FROM relation_config WHERE key = 'confidence-threshold'")) {
-            try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next()) {
-                    return;
-                }
-                String value = rs.getString("value");
-                if (!"3".equals(value == null ? "" : value.trim())) {
-                    return;
-                }
-            }
-        }
-        try (PreparedStatement ps = conn.prepareStatement("""
-                UPDATE relation_config SET value = '6', updated_at = ?
-                WHERE key = 'confidence-threshold'
-                """)) {
-            ps.setString(1, TS.format(Instant.now()));
-            ps.executeUpdate();
-        }
-    }
-
-    public void recordUsage(String datasourceId, String sessionId, String questionHash,
-                            String sql, UsageContext ctx) {
+    public void recordUsage(String datasourceId, String sessionId, String questionHash, String sql, UsageContext ctx) {
         if (!StringUtils.hasText(datasourceId) || !StringUtils.hasText(sql) || ctx == null) {
             return;
         }
@@ -133,811 +78,152 @@ public class RelationUsageService {
         if (pairs.isEmpty()) {
             return;
         }
-        int score = scoreFor(ctx);
+        int score = scorePolicy.scoreFor(ctx);
         if (score <= 0) {
             return;
         }
-        String ds = datasourceId.trim();
-        String sid = StringUtils.hasText(sessionId) ? sessionId.trim() : null;
-        String qh = StringUtils.hasText(questionHash) ? questionHash.trim() : null;
-        String now = TS.format(Instant.now());
-        try (Connection conn = sqliteInitializer.open()) {
+        String now = now();
+        try {
             for (RelationPair pair : pairs) {
-                upsertUsage(conn, ds, pair, score, now, ctx, sid, qh);
+                applyUsage(datasourceId.trim(), pair, score, now, ctx, blankToNull(sessionId), blankToNull(questionHash));
             }
         } catch (Exception ex) {
             log.warn("[Sidekick][relation] recordUsage failed: {}", ex.getMessage());
         }
     }
-
     public void markConfirmed(String relationId) {
-        if (!StringUtils.hasText(relationId)) {
-            throw new IllegalArgumentException("relationId 不能为空");
-        }
-        try (Connection conn = sqliteInitializer.open()) {
-            RelationUsage r = getById(conn, relationId.trim());
-            if (r == null) {
-                throw new IllegalArgumentException("关系不存在: " + relationId);
-            }
-            r.setStatus(RelationUsage.STATUS_CONFIRMED);
-            r.setConfidence(r.getConfidence() + relationConfigService.getInt(RelationConfigService.KEY_SCORE_CONFIRMED));
-            r.setSources(appendSource(r.getSources(), "MANUAL"));
-            r.setLastUsedAt(TS.format(Instant.now()));
-            updateRow(conn, r);
-            writeLog(conn, r.getId(), null, null,
-                    relationConfigService.getInt(RelationConfigService.KEY_SCORE_CONFIRMED), "MANUAL");
-            promoteIfNeeded(conn, r);
-        } catch (IllegalArgumentException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            throw new IllegalStateException("确认关系失败: " + ex.getMessage(), ex);
-        }
+        edit(relationId, "relationId 不能为空", "确认关系失败: ", row -> {
+            scorePolicy.applyManualConfirm(row, now());
+            repository.update(row);
+            repository.writeLog(row.getId(), null, null, scorePolicy.confirmedDelta(), "MANUAL");
+            saveIfPromoted(row);
+        });
     }
-
+    /** 拒绝不写 usage_log。 */
     public void markRejected(String relationId) {
-        if (!StringUtils.hasText(relationId)) {
-            throw new IllegalArgumentException("relationId 不能为空");
-        }
-        try (Connection conn = sqliteInitializer.open()) {
-            RelationUsage r = getById(conn, relationId.trim());
-            if (r == null) {
-                throw new IllegalArgumentException("关系不存在: " + relationId);
-            }
-            r.setStatus(RelationUsage.STATUS_REJECTED);
-            r.setConfidence(relationConfigService.getInt(RelationConfigService.KEY_SCORE_REJECTED));
-            r.setSources(appendSource(r.getSources(), "MANUAL"));
-            r.setLastUsedAt(TS.format(Instant.now()));
-            updateRow(conn, r);
-        } catch (IllegalArgumentException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            throw new IllegalStateException("拒绝关系失败: " + ex.getMessage(), ex);
-        }
+        edit(relationId, "relationId 不能为空", "拒绝关系失败: ", row -> {
+            scorePolicy.applyManualReject(row, now());
+            repository.update(row);
+        });
     }
-
-    /**
-     * @return true 表示新插入；false 表示已存在未改动
-     */
+    /** 已存在同一列对时不改动。 */
     public boolean upsertInferred(String datasourceId, RelationPair pair) {
         if (!StringUtils.hasText(datasourceId) || pair == null) {
             return false;
         }
-        String ds = datasourceId.trim();
-        try (Connection conn = sqliteInitializer.open()) {
-            RelationUsage existing = findByPair(conn, ds, pair);
-            if (existing != null) {
+        try {
+            if (repository.findByPair(datasourceId.trim(), pair) != null) {
                 return false;
             }
-            RelationUsage r = new RelationUsage();
-            r.setId(UUID.randomUUID().toString());
-            r.setDatasourceId(ds);
-            r.setSourceTable(pair.sourceTable());
-            r.setSourceColumn(pair.sourceColumn());
-            r.setTargetTable(pair.targetTable());
-            r.setTargetColumn(pair.targetColumn());
-            r.setHitCount(0);
-            r.setConfidence(0);
-            r.setStatus(RelationUsage.STATUS_PENDING);
-            r.setSources("INFERRED");
-            r.setFirstSeenAt(TS.format(Instant.now()));
-            insertRow(conn, r);
+            repository.insert(inferredRow(datasourceId.trim(), pair, now()));
             return true;
         } catch (Exception ex) {
             throw new IllegalStateException("写入推断关系失败: " + ex.getMessage(), ex);
         }
     }
-
     public List<RelationUsage> list(String datasourceId, String status, String keyword, int page, int size) {
         return list(datasourceId, null, status, keyword, page, size);
     }
-
     public List<RelationUsage> list(String datasourceId, String database, String status, String keyword,
                                     int page, int size) {
         if (!StringUtils.hasText(datasourceId)) {
             return List.of();
         }
-        int p = Math.max(page, 1);
-        int sz = Math.min(Math.max(size, 1), 200);
-        int offset = (p - 1) * sz;
-        String ds = datasourceId.trim();
-        StringBuilder sql = new StringBuilder("""
-                SELECT id, datasource_id, source_table, source_column, target_table, target_column,
-                       hit_count, confidence, status, sources, first_seen_at, last_used_at, last_use_rows
-                FROM relation_usage
-                WHERE datasource_id = ?
-                """);
-        appendListFilters(sql, database, status, keyword);
-        sql.append("""
-                 ORDER BY confidence DESC,
-                          CASE WHEN last_used_at IS NULL THEN 1 ELSE 0 END,
-                          last_used_at DESC, source_table, source_column
-                 LIMIT ? OFFSET ?
-                """);
-        List<RelationUsage> list = new ArrayList<>();
-        try (Connection conn = sqliteInitializer.open();
-             PreparedStatement ps = conn.prepareStatement(sql.toString())) {
-            int i = bindListFilters(ps, 1, ds, database, status, keyword);
-            ps.setInt(i++, sz);
-            ps.setInt(i, offset);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    list.add(mapRow(rs));
-                }
-            }
+        int safePage = Math.max(page, 1);
+        int safeSize = Math.min(Math.max(size, 1), 200);
+        try {
+            return repository.list(datasourceId.trim(), database, status, keyword, safeSize, (safePage - 1) * safeSize);
         } catch (Exception ex) {
             throw new IllegalStateException("查询关系失败: " + ex.getMessage(), ex);
         }
-        return list;
     }
-
     public int count(String datasourceId, String status, String keyword) {
         return count(datasourceId, null, status, keyword);
     }
-
+    /** 查询失败时返回 0。 */
     public int count(String datasourceId, String database, String status, String keyword) {
         if (!StringUtils.hasText(datasourceId)) {
             return 0;
         }
-        String ds = datasourceId.trim();
-        StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM relation_usage WHERE datasource_id = ?");
-        appendListFilters(sql, database, status, keyword);
-        try (Connection conn = sqliteInitializer.open();
-             PreparedStatement ps = conn.prepareStatement(sql.toString())) {
-            bindListFilters(ps, 1, ds, database, status, keyword);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return rs.getInt(1);
-                }
-            }
+        try {
+            return repository.count(datasourceId.trim(), database, status, keyword);
         } catch (Exception ex) {
             log.warn("[Sidekick][relation] count failed: {}", ex.getMessage());
+            return 0;
         }
-        return 0;
     }
-
-    /**
-     * ER 图数据：按库过滤关系（源表与目标表都必须属于该库）；节点超过 50 时只保留关联度 Top50。
-     * <p>SQL 过滤后再用 schema_table 表白名单做返回前二次过滤，避免漏网。</p>
-     */
     public Map<String, Object> graph(String datasourceId, String database, String status) {
-        if (!StringUtils.hasText(datasourceId)) {
-            throw new IllegalArgumentException("datasourceId 不能为空");
-        }
-        String ds = datasourceId.trim();
-        String db = StringUtils.hasText(database) ? database.trim() : null;
-        String st = StringUtils.hasText(status) ? status.trim().toUpperCase(Locale.ROOT) : null;
-
-        List<RelationUsage> raw = listAllForGraph(ds, null, st);
-        int edgesBefore = raw.size();
-        Set<String> tablesBefore = new LinkedHashSet<>();
-        for (RelationUsage e : raw) {
-            if (StringUtils.hasText(e.getSourceTable())) {
-                tablesBefore.add(e.getSourceTable().trim());
-            }
-            if (StringUtils.hasText(e.getTargetTable())) {
-                tablesBefore.add(e.getTargetTable().trim());
-            }
-        }
-        int nodesBefore = tablesBefore.size();
-
-        Set<String> allowedTables = null;
-        if (db != null) {
-            allowedTables = loadTableNamesInDatabase(ds, db);
-            log.info("[Sidekick][relation][graph] ds={} db={} schema_table count={}", ds, db, allowedTables.size());
-        }
-
-        List<RelationUsage> filtered = new ArrayList<>();
-        for (RelationUsage e : raw) {
-            String src = e.getSourceTable() == null ? "" : e.getSourceTable().trim();
-            String tgt = e.getTargetTable() == null ? "" : e.getTargetTable().trim();
-            if (!StringUtils.hasText(src) || !StringUtils.hasText(tgt)) {
-                continue;
-            }
-            if (allowedTables != null && (!allowedTables.contains(src) || !allowedTables.contains(tgt))) {
-                continue;
-            }
-            filtered.add(e);
-        }
-        int edgesAfter = filtered.size();
-
-        Map<String, Integer> relationCount = new LinkedHashMap<>();
-        for (RelationUsage e : filtered) {
-            bump(relationCount, e.getSourceTable());
-            bump(relationCount, e.getTargetTable());
-        }
-
-        List<Map.Entry<String, Integer>> ranked = new ArrayList<>(relationCount.entrySet());
-        ranked.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
-        int totalNodes = ranked.size();
-        boolean truncated = totalNodes > 50;
-        Set<String> keepTables = new LinkedHashSet<>();
-        int limit = truncated ? 50 : totalNodes;
-        for (int i = 0; i < limit; i++) {
-            keepTables.add(ranked.get(i).getKey());
-        }
-
-        List<RelationUsage> edges = new ArrayList<>();
-        for (RelationUsage e : filtered) {
-            if (keepTables.contains(e.getSourceTable()) && keepTables.contains(e.getTargetTable())) {
-                edges.add(e);
-            }
-        }
-
-        Map<String, TableMeta> meta = loadTableMeta(ds, db, keepTables);
-
-        List<Map<String, Object>> nodes = new ArrayList<>();
-        for (String table : keepTables) {
-            // 二次兜底：有库名时绝不返回白名单外的节点
-            if (allowedTables != null && !allowedTables.contains(table)) {
-                continue;
-            }
-            TableMeta tm = meta.getOrDefault(table, TableMeta.empty(table));
-            Map<String, Object> node = new LinkedHashMap<>();
-            node.put("id", table);
-            node.put("name", table);
-            node.put("comment", tm.comment());
-            node.put("domain", domainOf(table));
-            node.put("dbName", db);
-            node.put("relationCount", relationCount.getOrDefault(table, 0));
-            node.put("columnCount", tm.columnCount());
-            nodes.add(node);
-        }
-
-        List<Map<String, Object>> edgeItems = new ArrayList<>();
-        for (RelationUsage e : edges) {
-            if (allowedTables != null
-                    && (!allowedTables.contains(e.getSourceTable()) || !allowedTables.contains(e.getTargetTable()))) {
-                continue;
-            }
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id", e.getId());
-            m.put("source", e.getSourceTable());
-            m.put("target", e.getTargetTable());
-            m.put("sourceColumn", e.getSourceColumn());
-            m.put("targetColumn", e.getTargetColumn());
-            m.put("status", e.getStatus());
-            m.put("confidence", e.getConfidence());
-            m.put("sources", e.getSources());
-            edgeItems.add(m);
-        }
-
-        log.info("[Sidekick][relation][graph] ds={} db={} status={} nodesBefore={} nodesAfter={} edgesBefore={} edgesAfter={} returnedNodes={} returnedEdges={}",
-                ds, db == null ? "(all)" : db, st == null ? "(all)" : st,
-                nodesBefore, totalNodes, edgesBefore, edgesAfter, nodes.size(), edgeItems.size());
-
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("database", db);
-        body.put("nodes", nodes);
-        body.put("edges", edgeItems);
-        body.put("totalEdges", edgesAfter);
-        body.put("totalNodes", totalNodes);
-        body.put("truncated", truncated);
-        body.put("hiddenCount", truncated ? Math.max(0, totalNodes - keepTables.size()) : 0);
-        return body;
+        return graphAssembler.graph(datasourceId, database, status);
     }
-
-    /** 指定数据源 + 库下的全部表名（来自 schema_table）。 */
-    private Set<String> loadTableNamesInDatabase(String ds, String database) {
-        Set<String> out = new LinkedHashSet<>();
-        String sql = """
-                SELECT table_name FROM schema_table
-                WHERE datasource_id = ? AND db_name = ?
-                """;
-        try (Connection conn = sqliteInitializer.open();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, ds);
-            ps.setString(2, database);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String name = rs.getString(1);
-                    if (StringUtils.hasText(name)) {
-                        out.add(name.trim());
-                    }
-                }
-            }
-        } catch (Exception ex) {
-            throw new IllegalStateException("读取 schema_table 失败: " + ex.getMessage(), ex);
-        }
-        return out;
-    }
-
-    private List<RelationUsage> listAllForGraph(String ds, String database, String status) {
-        StringBuilder sql = new StringBuilder("""
-                SELECT id, datasource_id, source_table, source_column, target_table, target_column,
-                       hit_count, confidence, status, sources, first_seen_at, last_used_at, last_use_rows
-                FROM relation_usage
-                WHERE datasource_id = ?
-                """);
-        appendListFilters(sql, database, status, null);
-        sql.append(" ORDER BY confidence DESC, source_table, source_column");
-        List<RelationUsage> list = new ArrayList<>();
-        try (Connection conn = sqliteInitializer.open();
-             PreparedStatement ps = conn.prepareStatement(sql.toString())) {
-            bindListFilters(ps, 1, ds, database, status, null);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    list.add(mapRow(rs));
-                }
-            }
-        } catch (Exception ex) {
-            throw new IllegalStateException("查询关系图失败: " + ex.getMessage(), ex);
-        }
-        return list;
-    }
-
-    private static void appendListFilters(StringBuilder sql, String database, String status, String keyword) {
-        if (StringUtils.hasText(database)) {
-            // 两端都必须属于所选库；OR 会导致跨库边把外库表节点带进图
-            sql.append("""
-                     AND source_table IN (
-                       SELECT table_name FROM schema_table
-                       WHERE datasource_id = ? AND db_name = ?
-                     )
-                     AND target_table IN (
-                       SELECT table_name FROM schema_table
-                       WHERE datasource_id = ? AND db_name = ?
-                     )
-                    """);
-        }
-        if (StringUtils.hasText(status)) {
-            sql.append(" AND status = ?");
-        }
-        if (StringUtils.hasText(keyword)) {
-            sql.append("""
-                     AND (source_table LIKE ? OR source_column LIKE ?
-                       OR target_table LIKE ? OR target_column LIKE ?)
-                    """);
-        }
-    }
-
-    private static int bindListFilters(PreparedStatement ps, int start, String ds, String database,
-                                       String status, String keyword) throws Exception {
-        int i = start;
-        ps.setString(i++, ds);
-        if (StringUtils.hasText(database)) {
-            String db = database.trim();
-            ps.setString(i++, ds);
-            ps.setString(i++, db);
-            ps.setString(i++, ds);
-            ps.setString(i++, db);
-        }
-        if (StringUtils.hasText(status)) {
-            ps.setString(i++, status.trim().toUpperCase(Locale.ROOT));
-        }
-        if (StringUtils.hasText(keyword)) {
-            String like = "%" + keyword.trim() + "%";
-            ps.setString(i++, like);
-            ps.setString(i++, like);
-            ps.setString(i++, like);
-            ps.setString(i++, like);
-        }
-        return i;
-    }
-
-    private static void bump(Map<String, Integer> map, String table) {
-        if (!StringUtils.hasText(table)) {
-            return;
-        }
-        String key = table.trim();
-        map.put(key, map.getOrDefault(key, 0) + 1);
-    }
-
-    private static String domainOf(String table) {
-        if (!StringUtils.hasText(table)) {
-            return "other";
-        }
-        int idx = table.indexOf('_');
-        if (idx <= 0) {
-            return table.toLowerCase(Locale.ROOT);
-        }
-        return table.substring(0, idx).toLowerCase(Locale.ROOT);
-    }
-
-    private Map<String, TableMeta> loadTableMeta(String ds, String database, Collection<String> tables) {
-        Map<String, TableMeta> out = new LinkedHashMap<>();
-        if (tables == null || tables.isEmpty()) {
-            return out;
-        }
-        StringBuilder sql = new StringBuilder("""
-                SELECT t.table_name,
-                       COALESCE(NULLIF(TRIM(t.table_comment), ''), NULLIF(TRIM(t.table_purpose), ''), '') AS comment,
-                       (SELECT COUNT(*) FROM schema_column c WHERE c.table_id = t.id) AS col_count
-                FROM schema_table t
-                WHERE t.datasource_id = ?
-                """);
-        if (StringUtils.hasText(database)) {
-            sql.append(" AND t.db_name = ?");
-        }
-        try (Connection conn = sqliteInitializer.open();
-             PreparedStatement ps = conn.prepareStatement(sql.toString())) {
-            ps.setString(1, ds);
-            if (StringUtils.hasText(database)) {
-                ps.setString(2, database.trim());
-            }
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String name = rs.getString("table_name");
-                    if (!tables.contains(name)) {
-                        continue;
-                    }
-                    out.put(name, new TableMeta(
-                            name,
-                            rs.getString("comment") == null ? "" : rs.getString("comment"),
-                            rs.getInt("col_count")));
-                }
-            }
-        } catch (Exception ex) {
-            log.warn("[Sidekick][relation] load table meta failed: {}", ex.getMessage());
-        }
-        return out;
-    }
-
-    private record TableMeta(String name, String comment, int columnCount) {
-        static TableMeta empty(String name) {
-            return new TableMeta(name, "", 0);
-        }
-    }
-
-    /**
-     * 与指定表相关的已确认关系（归一化后源/目标都算），按置信度降序。
-     */
     public List<RelationUsage> listConfirmedTouching(String datasourceId, String tableName) {
         if (!StringUtils.hasText(datasourceId) || !StringUtils.hasText(tableName)) {
             return List.of();
         }
-        String sql = """
-                SELECT id, datasource_id, source_table, source_column, target_table, target_column,
-                       hit_count, confidence, status, sources, first_seen_at, last_used_at, last_use_rows
-                FROM relation_usage
-                WHERE datasource_id = ?
-                  AND status = 'CONFIRMED'
-                  AND (LOWER(source_table) = LOWER(?) OR LOWER(target_table) = LOWER(?))
-                ORDER BY confidence DESC, source_table, source_column
-                """;
-        List<RelationUsage> list = new ArrayList<>();
-        try (Connection conn = sqliteInitializer.open();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, datasourceId.trim());
-            ps.setString(2, tableName.trim());
-            ps.setString(3, tableName.trim());
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    list.add(mapRow(rs));
-                }
-            }
+        try {
+            return repository.listConfirmedTouching(datasourceId.trim(), tableName.trim());
         } catch (Exception ex) {
             log.warn("[Sidekick][relation] listConfirmedTouching failed: {}", ex.getMessage());
+            return List.of();
         }
-        return list;
     }
-
-    /**
-     * 候选表经由 CONFIRMED 关系连到的邻接表（不含候选表自身）。
-     */
+    /** 候选表经由 CONFIRMED 关系连到的邻接表，不含候选表自身。 */
     public Set<String> listConfirmedNeighborTables(String datasourceId, Collection<String> seedTables) {
-        Set<String> out = new LinkedHashSet<>();
-        if (!StringUtils.hasText(datasourceId) || seedTables == null || seedTables.isEmpty()) {
-            return out;
-        }
-        Set<String> seeds = new LinkedHashSet<>();
-        for (String t : seedTables) {
-            if (StringUtils.hasText(t)) {
-                seeds.add(t.trim().toLowerCase(Locale.ROOT));
-            }
-        }
-        if (seeds.isEmpty()) {
-            return out;
-        }
-        String sql = """
-                SELECT source_table, target_table
-                FROM relation_usage
-                WHERE datasource_id = ? AND status = 'CONFIRMED'
-                """;
-        try (Connection conn = sqliteInitializer.open();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, datasourceId.trim());
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String source = rs.getString("source_table");
-                    String target = rs.getString("target_table");
-                    boolean sourceHit = source != null && seeds.contains(source.toLowerCase(Locale.ROOT));
-                    boolean targetHit = target != null && seeds.contains(target.toLowerCase(Locale.ROOT));
-                    if (sourceHit && target != null && !seeds.contains(target.toLowerCase(Locale.ROOT))) {
-                        out.add(target);
-                    }
-                    if (targetHit && source != null && !seeds.contains(source.toLowerCase(Locale.ROOT))) {
-                        out.add(source);
-                    }
-                }
-            }
-        } catch (Exception ex) {
-            log.warn("[Sidekick][relation] neighbor lookup failed: {}", ex.getMessage());
-        }
-        return out;
+        return graphAssembler.confirmedNeighbors(datasourceId, seedTables);
     }
-
     public RelationUsage get(String id) {
         if (!StringUtils.hasText(id)) {
             return null;
         }
-        try (Connection conn = sqliteInitializer.open()) {
-            return getById(conn, id.trim());
+        try {
+            return repository.findById(id.trim());
         } catch (Exception ex) {
             throw new IllegalStateException("查询关系失败: " + ex.getMessage(), ex);
         }
     }
-
     public void delete(String id) {
         if (!StringUtils.hasText(id)) {
             throw new IllegalArgumentException("id 不能为空");
         }
-        try (Connection conn = sqliteInitializer.open();
-             PreparedStatement ps = conn.prepareStatement("DELETE FROM relation_usage WHERE id = ?")) {
-            ps.setString(1, id.trim());
-            ps.executeUpdate();
+        try {
+            repository.deleteById(id.trim());
         } catch (Exception ex) {
             throw new IllegalStateException("删除关系失败: " + ex.getMessage(), ex);
         }
     }
-
     public void deleteByDatasource(String datasourceId) {
         if (!StringUtils.hasText(datasourceId)) {
             return;
         }
-        try (Connection conn = sqliteInitializer.open()) {
-            try (PreparedStatement logPs = conn.prepareStatement(
-                    "DELETE FROM relation_usage_log WHERE relation_id IN (SELECT id FROM relation_usage WHERE datasource_id = ?)")) {
-                logPs.setString(1, datasourceId.trim());
-                logPs.executeUpdate();
-            }
-            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM relation_usage WHERE datasource_id = ?")) {
-                ps.setString(1, datasourceId.trim());
-                int n = ps.executeUpdate();
-                log.info("[Sidekick][relation] deleted {} rows for datasource={}", n, datasourceId);
-            }
+        try {
+            int deleted = repository.deleteByDatasource(datasourceId.trim());
+            log.info("[Sidekick][relation] deleted {} rows for datasource={}", deleted, datasourceId);
         } catch (Exception ex) {
             log.warn("[Sidekick][relation] deleteByDatasource failed: {}", ex.getMessage());
         }
     }
-
     public void resetToPending(String relationId) {
         markPending(relationId);
     }
-
     public void markPending(String relationId) {
-        if (!StringUtils.hasText(relationId)) {
-            throw new IllegalArgumentException("relationId 不能为空");
-        }
-        try (Connection conn = sqliteInitializer.open()) {
-            RelationUsage r = getById(conn, relationId.trim());
-            if (r == null) {
-                throw new IllegalArgumentException("关系不存在: " + relationId);
-            }
-            r.setStatus(RelationUsage.STATUS_PENDING);
-            r.setConfidence(0);
-            r.setSources(appendSource(r.getSources(), "RESET"));
-            r.setLastUsedAt(TS.format(Instant.now()));
-            updateRow(conn, r);
-        } catch (IllegalArgumentException ex) {
-            throw ex;
-        } catch (Exception ex) {
-            throw new IllegalStateException("恢复关系失败: " + ex.getMessage(), ex);
-        }
+        edit(relationId, "relationId 不能为空", "恢复关系失败: ", row -> {
+            scorePolicy.applyReset(row, now());
+            repository.update(row);
+        });
     }
-
-    private void upsertUsage(Connection conn, String ds, RelationPair pair, int score, String now,
-                             UsageContext ctx, String sessionId, String questionHash) throws Exception {
-        RelationUsage existing = findByPair(conn, ds, pair);
-        if (existing != null && RelationUsage.STATUS_REJECTED.equals(existing.getStatus())) {
-            return;
-        }
-        if (existing != null && alreadyScored(conn, existing.getId(), sessionId, questionHash)) {
-            return;
-        }
-        RelationUsage row;
-        if (existing == null) {
-            row = new RelationUsage();
-            row.setId(UUID.randomUUID().toString());
-            row.setDatasourceId(ds);
-            row.setSourceTable(pair.sourceTable());
-            row.setSourceColumn(pair.sourceColumn());
-            row.setTargetTable(pair.targetTable());
-            row.setTargetColumn(pair.targetColumn());
-            row.setHitCount(1);
-            row.setConfidence(score);
-            row.setStatus(RelationUsage.STATUS_PENDING);
-            row.setSources(ctx.sourceTag());
-            row.setFirstSeenAt(now);
-            row.setLastUsedAt(now);
-            row.setLastUseRows(ctx.rowCount());
-            insertRow(conn, row);
-        } else {
-            row = existing;
-            row.setHitCount(row.getHitCount() + 1);
-            row.setConfidence(row.getConfidence() + score);
-            row.setSources(appendSource(row.getSources(), ctx.sourceTag()));
-            row.setLastUsedAt(now);
-            row.setLastUseRows(ctx.rowCount());
-            updateRow(conn, row);
-        }
-        writeLog(conn, row.getId(), sessionId, questionHash, score, ctx.sourceTag());
-        promoteIfNeeded(conn, row);
-    }
-
-    private boolean alreadyScored(Connection conn, String relationId, String sessionId, String questionHash)
-            throws Exception {
-        if (!StringUtils.hasText(sessionId) || !StringUtils.hasText(questionHash)) {
-            return false;
-        }
-        String sql = """
-                SELECT 1 FROM relation_usage_log
-                WHERE relation_id = ? AND session_id = ? AND question_hash = ?
-                LIMIT 1
-                """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, relationId);
-            ps.setString(2, sessionId);
-            ps.setString(3, questionHash);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
-            }
-        }
-    }
-
-    private void writeLog(Connection conn, String relationId, String sessionId, String questionHash,
-                          int delta, String source) throws Exception {
-        String sql = """
-                INSERT INTO relation_usage_log(id, relation_id, session_id, question_hash, delta, source, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, UUID.randomUUID().toString());
-            ps.setString(2, relationId);
-            ps.setString(3, sessionId);
-            ps.setString(4, questionHash);
-            ps.setInt(5, delta);
-            ps.setString(6, source);
-            ps.setString(7, TS.format(Instant.now()));
-            ps.executeUpdate();
-        }
-    }
-
-    /**
-     * INFERRED 且没有强信号时，晋升阈值乘以 inferred-threshold-multiplier（默认 2）。
-     * 强信号：MANUAL / SAVED / LIKED。
-     */
     static int promotionThreshold(String sources, int base, int multiplier) {
-        int threshold = base <= 0 ? 6 : base;
-        int mul = multiplier <= 0 ? 2 : multiplier;
-        if (hasToken(sources, "INFERRED") && !hasStrongSignal(sources)) {
-            return threshold * mul;
-        }
-        return threshold;
+        return RelationScorePolicy.promotionThreshold(sources, base, multiplier);
     }
-
     public static boolean hasStrongSignal(String sources) {
-        return hasToken(sources, "MANUAL")
-                || hasToken(sources, "SAVED")
-                || hasToken(sources, "LIKED");
+        return RelationScorePolicy.hasStrongSignal(sources);
     }
-
-    /** 展示用：CONFIRMED 但无强信号 → AUTO；有强信号 → CONFIRMED。 */
     public static String displayKind(RelationUsage row) {
-        if (row == null || !StringUtils.hasText(row.getStatus())) {
-            return "PENDING";
-        }
-        String status = row.getStatus().trim().toUpperCase(Locale.ROOT);
-        if (RelationUsage.STATUS_REJECTED.equals(status)) {
-            return "REJECTED";
-        }
-        if (RelationUsage.STATUS_PENDING.equals(status)) {
-            return "PENDING";
-        }
-        if (RelationUsage.STATUS_CONFIRMED.equals(status)) {
-            return hasStrongSignal(row.getSources()) ? "CONFIRMED" : "AUTO";
-        }
-        return status;
+        return RelationScorePolicy.displayKind(row);
     }
-
-    /**
-     * 来源明细：每个 source token 与配置加分，供管理页解释「为何被确认」。
-     */
     public List<Map<String, Object>> sourceScoreDetails(String sources) {
-        List<Map<String, Object>> out = new ArrayList<>();
-        if (!StringUtils.hasText(sources)) {
-            return out;
-        }
-        for (String raw : sources.split(",")) {
-            if (!StringUtils.hasText(raw)) {
-                continue;
-            }
-            String tag = raw.trim().toUpperCase(Locale.ROOT);
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("source", tag);
-            item.put("label", sourceLabel(tag));
-            item.put("score", sourceUnitScore(tag));
-            item.put("strong", "MANUAL".equals(tag) || "SAVED".equals(tag) || "LIKED".equals(tag));
-            out.add(item);
-        }
-        return out;
+        return scorePolicy.sourceScoreDetails(sources);
     }
-
-    private static String sourceLabel(String tag) {
-        return switch (tag) {
-            case "USED" -> "执行成功/有行";
-            case "SAVED" -> "保存脚本";
-            case "MANUAL" -> "手动确认";
-            case "LIKED" -> "结果有用";
-            case "DISLIKED" -> "结果没用";
-            case "INFERRED" -> "推断导入";
-            case "RESET" -> "重置";
-            default -> tag;
-        };
-    }
-
-    private int sourceUnitScore(String tag) {
-        return switch (tag) {
-            case "USED" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_SQL_SUCCESS)
-                    + relationConfigService.getInt(RelationConfigService.KEY_SCORE_ROW_COUNT);
-            case "SAVED" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_SAVED);
-            case "MANUAL" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_CONFIRMED);
-            case "LIKED" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_LIKED);
-            case "DISLIKED" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_DISLIKED);
-            case "REJECTED" -> relationConfigService.getInt(RelationConfigService.KEY_SCORE_REJECTED);
-            default -> 0;
-        };
-    }
-
-    private void promoteIfNeeded(Connection conn, RelationUsage r) throws Exception {
-        if (r == null || RelationUsage.STATUS_REJECTED.equals(r.getStatus())) {
-            return;
-        }
-        if (!RelationUsage.STATUS_PENDING.equals(r.getStatus())) {
-            return;
-        }
-        int threshold = promotionThreshold(
-                r.getSources(),
-                relationConfigService.confidenceThreshold(),
-                relationConfigService.getInt(RelationConfigService.KEY_INFERRED_MULTIPLIER, 2));
-        if (r.getConfidence() < threshold) {
-            return;
-        }
-        if (relationConfigService.requireStrongSignal() && !hasStrongSignal(r.getSources())) {
-            return;
-        }
-        r.setStatus(RelationUsage.STATUS_CONFIRMED);
-        updateRow(conn, r);
-        log.info("[Sidekick] relation promoted: {}.{} → {}.{} (confidence={}, sources={})",
-                r.getSourceTable(), r.getSourceColumn(),
-                r.getTargetTable(), r.getTargetColumn(), r.getConfidence(), r.getSources());
-    }
-
-    private void demoteIfNeeded(Connection conn, RelationUsage r) throws Exception {
-        if (r == null || !RelationUsage.STATUS_CONFIRMED.equals(r.getStatus())) {
-            return;
-        }
-        int threshold = promotionThreshold(
-                r.getSources(),
-                relationConfigService.confidenceThreshold(),
-                relationConfigService.getInt(RelationConfigService.KEY_INFERRED_MULTIPLIER, 2));
-        boolean below = r.getConfidence() < threshold;
-        boolean lostSignal = relationConfigService.requireStrongSignal() && !hasStrongSignal(r.getSources());
-        if (below || lostSignal) {
-            r.setStatus(RelationUsage.STATUS_PENDING);
-            updateRow(conn, r);
-            log.info("[Sidekick] relation demoted: {}.{} → {}.{} (confidence={}, sources={})",
-                    r.getSourceTable(), r.getSourceColumn(),
-                    r.getTargetTable(), r.getTargetColumn(), r.getConfidence(), r.getSources());
-        }
-    }
-
-    /**
-     * 结果区 👍/👎。按 SQL 提取 JOIN，对每条关系加减分。
-     *
-     * @return 受影响的关系数
-     */
-    public int recordFeedback(String datasourceId, String sessionId, String messageId,
-                              String sql, boolean useful) {
+    /** 结果区点赞或点踩。按 SQL 提取 JOIN 加减分，返回受影响的关系数。 */
+    public int recordFeedback(String datasourceId, String sessionId, String messageId, String sql, boolean useful) {
         if (!StringUtils.hasText(datasourceId) || !StringUtils.hasText(sql)) {
             throw new IllegalArgumentException("datasourceId 与 sql 不能为空");
         }
@@ -945,18 +231,14 @@ public class RelationUsageService {
         if (pairs.isEmpty()) {
             return 0;
         }
-        int delta = useful
-                ? relationConfigService.getInt(RelationConfigService.KEY_SCORE_LIKED)
-                : relationConfigService.getInt(RelationConfigService.KEY_SCORE_DISLIKED);
-        String tag = useful ? "LIKED" : "DISLIKED";
-        String ds = datasourceId.trim();
-        String sid = StringUtils.hasText(sessionId) ? sessionId.trim() : null;
-        String mid = StringUtils.hasText(messageId) ? messageId.trim() : null;
-        String now = TS.format(Instant.now());
+        int delta = scorePolicy.feedbackDelta(useful);
+        String tag = RelationScorePolicy.feedbackTag(useful);
+        String now = now();
         int touched = 0;
-        try (Connection conn = sqliteInitializer.open()) {
+        try {
             for (RelationPair pair : pairs) {
-                if (applyFeedback(conn, ds, pair, delta, tag, now, sid, mid)) {
+                if (applyFeedback(datasourceId.trim(), pair, delta, tag, now,
+                        blankToNull(sessionId), blankToNull(messageId))) {
                     touched++;
                 }
             }
@@ -967,304 +249,151 @@ public class RelationUsageService {
         }
         return touched;
     }
-
-    private boolean applyFeedback(Connection conn, String ds, RelationPair pair, int delta, String tag,
-                                  String now, String sessionId, String messageId) throws Exception {
-        RelationUsage existing = findByPair(conn, ds, pair);
+    private int demoteConfirmedWithoutStrongSignal() throws Exception {
+        int demoted = 0;
+        for (RelationUsage row : repository.listByStatus(RelationUsage.STATUS_CONFIRMED)) {
+            if (!scorePolicy.shouldDemoteConfirmedWithoutStrongSignal(row)) {
+                continue;
+            }
+            row.setStatus(RelationUsage.STATUS_PENDING);
+            repository.update(row);
+            demoted++;
+        }
+        return demoted;
+    }
+    private int copyInferredRows() throws Exception {
+        int copied = 0;
+        String now = now();
+        for (InferredFkRow inferred : repository.selectInferredFkRows()) {
+            RelationPair pair = toPair(inferred);
+            if (pair == null || repository.findByPair(inferred.datasourceId(), pair) != null) {
+                continue;
+            }
+            repository.insert(inferredRow(inferred.datasourceId(), pair, now));
+            copied++;
+        }
+        return copied;
+    }
+    private void applyUsage(String datasourceId, RelationPair pair, int score, String now, UsageContext ctx,
+                            String sessionId, String questionHash) throws Exception {
+        RelationUsage existing = repository.findByPair(datasourceId, pair);
+        if (existing != null && RelationUsage.STATUS_REJECTED.equals(existing.getStatus())) {
+            return;
+        }
+        if (existing != null && repository.alreadyScored(existing.getId(), sessionId, questionHash)) {
+            return;
+        }
+        RelationUsage row = existing == null ? newRow(datasourceId, pair) : existing;
+        if (existing == null) {
+            scorePolicy.applyNewUsage(row, score, ctx, now);
+            repository.insert(row);
+        } else {
+            scorePolicy.applyExistingUsage(row, score, ctx, now);
+            repository.update(row);
+        }
+        repository.writeLog(row.getId(), sessionId, questionHash, score, ctx.sourceTag());
+        saveIfPromoted(row);
+    }
+    private boolean applyFeedback(String datasourceId, RelationPair pair, int delta, String tag, String now,
+                                  String sessionId, String messageId) throws Exception {
+        RelationUsage existing = repository.findByPair(datasourceId, pair);
         if (existing != null && RelationUsage.STATUS_REJECTED.equals(existing.getStatus())) {
             return false;
         }
-        RelationUsage row;
+        RelationUsage row = existing == null ? newRow(datasourceId, pair) : existing;
         if (existing == null) {
-            row = new RelationUsage();
-            row.setId(UUID.randomUUID().toString());
-            row.setDatasourceId(ds);
-            row.setSourceTable(pair.sourceTable());
-            row.setSourceColumn(pair.sourceColumn());
-            row.setTargetTable(pair.targetTable());
-            row.setTargetColumn(pair.targetColumn());
-            row.setHitCount(0);
-            row.setConfidence(delta);
-            row.setStatus(RelationUsage.STATUS_PENDING);
-            row.setSources(tag);
-            row.setFirstSeenAt(now);
-            row.setLastUsedAt(now);
-            insertRow(conn, row);
+            scorePolicy.applyNewFeedback(row, delta, tag, now);
+            repository.insert(row);
         } else {
-            row = existing;
-            row.setConfidence(row.getConfidence() + delta);
-            row.setSources(appendSource(row.getSources(), tag));
-            row.setLastUsedAt(now);
-            updateRow(conn, row);
+            scorePolicy.applyExistingFeedback(row, delta, tag, now);
+            repository.update(row);
         }
-        writeLog(conn, row.getId(), sessionId, messageId, delta, tag);
+        repository.writeLog(row.getId(), sessionId, messageId, delta, tag);
         if ("DISLIKED".equals(tag)) {
-            int streak = consecutiveDislikes(conn, row.getId());
-            if (streak >= relationConfigService.maxConsecutiveDislikes()) {
-                row.setStatus(RelationUsage.STATUS_REJECTED);
-                row.setConfidence(relationConfigService.getInt(RelationConfigService.KEY_SCORE_REJECTED));
-                updateRow(conn, row);
+            int streak = scorePolicy.leadingDislikeStreak(repository.recentLogSources(row.getId()));
+            if (scorePolicy.shouldRejectForDislikeStreak(streak)) {
+                scorePolicy.applyDislikeRejection(row);
+                repository.update(row);
                 return true;
             }
-            demoteIfNeeded(conn, row);
+            saveIfDemoted(row);
         } else {
-            promoteIfNeeded(conn, row);
+            saveIfPromoted(row);
         }
         return true;
     }
-
-    private int consecutiveDislikes(Connection conn, String relationId) throws Exception {
-        String sql = """
-                SELECT source FROM relation_usage_log
-                WHERE relation_id = ?
-                ORDER BY created_at DESC, rowid DESC
-                LIMIT 20
-                """;
-        int streak = 0;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, relationId);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String source = rs.getString("source");
-                    if ("DISLIKED".equalsIgnoreCase(source == null ? "" : source.trim())) {
-                        streak++;
-                    } else {
-                        break;
-                    }
-                }
-            }
-        }
-        return streak;
-    }
-
-    private int scoreFor(UsageContext ctx) {
-        int s = 0;
-        if (ctx.sqlSuccess()) {
-            s += relationConfigService.getInt(RelationConfigService.KEY_SCORE_SQL_SUCCESS);
-        }
-        if (ctx.rowCount() > 0) {
-            s += relationConfigService.getInt(RelationConfigService.KEY_SCORE_ROW_COUNT);
-        }
-        if (ctx.savedToScript()) {
-            s += relationConfigService.getInt(RelationConfigService.KEY_SCORE_SAVED);
-        }
-        if (ctx.userConfirmed()) {
-            s += relationConfigService.getInt(RelationConfigService.KEY_SCORE_CONFIRMED);
-        }
-        return s;
-    }
-
-    private int countAll(Connection conn) throws Exception {
-        try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM relation_usage");
-             ResultSet rs = ps.executeQuery()) {
-            return rs.next() ? rs.getInt(1) : 0;
+    private void saveIfPromoted(RelationUsage row) throws Exception {
+        if (scorePolicy.markPromotedIfEligible(row)) {
+            repository.update(row);
+            logMove("promoted", row);
         }
     }
-
-    private int copyInferredRows(Connection conn) throws Exception {
-        String q = """
-                SELECT t.datasource_id, t.table_name, c.column_name, c.foreign_key_ref
-                FROM schema_column c
-                JOIN schema_table t ON t.id = c.table_id
-                WHERE IFNULL(c.is_inferred, 0) = 1
-                  AND c.foreign_key_ref IS NOT NULL
-                  AND TRIM(c.foreign_key_ref) <> ''
-                """;
-        int n = 0;
-        String now = TS.format(Instant.now());
-        try (PreparedStatement ps = conn.prepareStatement(q);
-             ResultSet rs = ps.executeQuery()) {
-            while (rs.next()) {
-                String ref = rs.getString("foreign_key_ref");
-                int dot = ref == null ? -1 : ref.lastIndexOf('.');
-                if (dot <= 0 || dot >= ref.length() - 1) {
-                    continue;
-                }
-                RelationPair pair = RelationPair.normalized(
-                        rs.getString("table_name"),
-                        rs.getString("column_name"),
-                        ref.substring(0, dot).trim(),
-                        ref.substring(dot + 1).trim());
-                if (findByPair(conn, rs.getString("datasource_id"), pair) != null) {
-                    continue;
-                }
-                RelationUsage r = new RelationUsage();
-                r.setId(UUID.randomUUID().toString());
-                r.setDatasourceId(rs.getString("datasource_id"));
-                r.setSourceTable(pair.sourceTable());
-                r.setSourceColumn(pair.sourceColumn());
-                r.setTargetTable(pair.targetTable());
-                r.setTargetColumn(pair.targetColumn());
-                r.setHitCount(0);
-                r.setConfidence(0);
-                r.setStatus(RelationUsage.STATUS_PENDING);
-                r.setSources("INFERRED");
-                r.setFirstSeenAt(now);
-                insertRow(conn, r);
-                n++;
-            }
-        }
-        return n;
-    }
-
-    private boolean settingIsTrue(Connection conn, String key) throws Exception {
-        try (PreparedStatement ps = conn.prepareStatement("SELECT value FROM app_settings WHERE key = ?")) {
-            ps.setString(1, key);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() && "true".equalsIgnoreCase(rs.getString("value"));
-            }
+    private void saveIfDemoted(RelationUsage row) throws Exception {
+        if (scorePolicy.markDemotedIfNeeded(row)) {
+            repository.update(row);
+            logMove("demoted", row);
         }
     }
-
-    private void writeSetting(Connection conn, String key, String value) throws Exception {
-        String now = TS.format(Instant.now());
-        try (PreparedStatement ps = conn.prepareStatement("""
-                INSERT INTO app_settings(key, value, updated_at) VALUES(?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-                """)) {
-            ps.setString(1, key);
-            ps.setString(2, value);
-            ps.setString(3, now);
-            ps.executeUpdate();
+    private void edit(String relationId, String emptyMessage, String failPrefix, RowWork work) {
+        if (!StringUtils.hasText(relationId)) {
+            throw new IllegalArgumentException(emptyMessage);
+        }
+        try {
+            work.apply(requireRow(relationId));
+        } catch (IllegalArgumentException ex) {
+            throw ex;
+        } catch (Exception ex) {
+            throw new IllegalStateException(failPrefix + ex.getMessage(), ex);
         }
     }
-
-    private static boolean hasToken(String sources, String token) {
-        if (!StringUtils.hasText(sources) || !StringUtils.hasText(token)) {
-            return false;
+    private RelationUsage requireRow(String relationId) throws Exception {
+        RelationUsage row = repository.findById(relationId.trim());
+        if (row == null) {
+            throw new IllegalArgumentException("关系不存在: " + relationId);
         }
-        String want = token.trim().toUpperCase(Locale.ROOT);
-        for (String p : sources.split(",")) {
-            if (want.equals(p.trim().toUpperCase(Locale.ROOT))) {
-                return true;
-            }
-        }
-        return false;
+        return row;
     }
-
-    private static String appendSource(String sources, String add) {
-        Set<String> set = new LinkedHashSet<>();
-        if (StringUtils.hasText(sources)) {
-            for (String p : sources.split(",")) {
-                if (StringUtils.hasText(p)) {
-                    set.add(p.trim().toUpperCase(Locale.ROOT));
-                }
-            }
-        }
-        if (StringUtils.hasText(add)) {
-            set.add(add.trim().toUpperCase(Locale.ROOT));
-        }
-        return String.join(",", set);
+    private static RelationUsage newRow(String datasourceId, RelationPair pair) {
+        RelationUsage row = new RelationUsage();
+        row.setId(UUID.randomUUID().toString());
+        row.setDatasourceId(datasourceId);
+        row.setSourceTable(pair.sourceTable());
+        row.setSourceColumn(pair.sourceColumn());
+        row.setTargetTable(pair.targetTable());
+        row.setTargetColumn(pair.targetColumn());
+        return row;
     }
-
-    private RelationUsage findByPair(Connection conn, String ds, RelationPair pair) throws Exception {
-        String sql = """
-                SELECT id, datasource_id, source_table, source_column, target_table, target_column,
-                       hit_count, confidence, status, sources, first_seen_at, last_used_at, last_use_rows
-                FROM relation_usage
-                WHERE datasource_id = ?
-                  AND source_table = ? AND source_column = ?
-                  AND target_table = ? AND target_column = ?
-                """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, ds);
-            ps.setString(2, pair.sourceTable());
-            ps.setString(3, pair.sourceColumn());
-            ps.setString(4, pair.targetTable());
-            ps.setString(5, pair.targetColumn());
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return mapRow(rs);
-                }
-            }
-        }
-        return null;
+    private static RelationUsage inferredRow(String datasourceId, RelationPair pair, String now) {
+        RelationUsage row = newRow(datasourceId, pair);
+        row.setHitCount(0);
+        row.setConfidence(0);
+        row.setStatus(RelationUsage.STATUS_PENDING);
+        row.setSources("INFERRED");
+        row.setFirstSeenAt(now);
+        return row;
     }
-
-    private RelationUsage getById(Connection conn, String id) throws Exception {
-        String sql = """
-                SELECT id, datasource_id, source_table, source_column, target_table, target_column,
-                       hit_count, confidence, status, sources, first_seen_at, last_used_at, last_use_rows
-                FROM relation_usage WHERE id = ?
-                """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, id);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return mapRow(rs);
-                }
-            }
+    private static RelationPair toPair(InferredFkRow inferred) {
+        String ref = inferred.foreignKeyRef();
+        int dot = ref == null ? -1 : ref.lastIndexOf('.');
+        if (dot <= 0 || dot >= ref.length() - 1) {
+            return null;
         }
-        return null;
+        return RelationPair.normalized(inferred.tableName(), inferred.columnName(),
+                ref.substring(0, dot).trim(), ref.substring(dot + 1).trim());
     }
-
-    private void insertRow(Connection conn, RelationUsage r) throws Exception {
-        String sql = """
-                INSERT INTO relation_usage(
-                  id, datasource_id, source_table, source_column, target_table, target_column,
-                  hit_count, confidence, status, sources, first_seen_at, last_used_at, last_use_rows)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, r.getId());
-            ps.setString(2, r.getDatasourceId());
-            ps.setString(3, r.getSourceTable());
-            ps.setString(4, r.getSourceColumn());
-            ps.setString(5, r.getTargetTable());
-            ps.setString(6, r.getTargetColumn());
-            ps.setInt(7, r.getHitCount());
-            ps.setInt(8, r.getConfidence());
-            ps.setString(9, r.getStatus());
-            ps.setString(10, r.getSources());
-            ps.setString(11, r.getFirstSeenAt());
-            ps.setString(12, r.getLastUsedAt());
-            if (r.getLastUseRows() == null) {
-                ps.setNull(13, java.sql.Types.INTEGER);
-            } else {
-                ps.setInt(13, r.getLastUseRows());
-            }
-            ps.executeUpdate();
-        }
+    private static void logMove(String verb, RelationUsage row) {
+        log.info("[Sidekick] relation {}: {}.{} → {}.{} (confidence={}, sources={})",
+                verb, row.getSourceTable(), row.getSourceColumn(), row.getTargetTable(), row.getTargetColumn(),
+                row.getConfidence(), row.getSources());
     }
-
-    private void updateRow(Connection conn, RelationUsage r) throws Exception {
-        String sql = """
-                UPDATE relation_usage
-                SET hit_count = ?, confidence = ?, status = ?, sources = ?, last_used_at = ?, last_use_rows = ?
-                WHERE id = ?
-                """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setInt(1, r.getHitCount());
-            ps.setInt(2, r.getConfidence());
-            ps.setString(3, r.getStatus());
-            ps.setString(4, r.getSources());
-            ps.setString(5, r.getLastUsedAt());
-            if (r.getLastUseRows() == null) {
-                ps.setNull(6, java.sql.Types.INTEGER);
-            } else {
-                ps.setInt(6, r.getLastUseRows());
-            }
-            ps.setString(7, r.getId());
-            ps.executeUpdate();
-        }
+    private static String blankToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
     }
-
-    private static RelationUsage mapRow(ResultSet rs) throws Exception {
-        RelationUsage r = new RelationUsage();
-        r.setId(rs.getString("id"));
-        r.setDatasourceId(rs.getString("datasource_id"));
-        r.setSourceTable(rs.getString("source_table"));
-        r.setSourceColumn(rs.getString("source_column"));
-        r.setTargetTable(rs.getString("target_table"));
-        r.setTargetColumn(rs.getString("target_column"));
-        r.setHitCount(rs.getInt("hit_count"));
-        r.setConfidence(rs.getInt("confidence"));
-        r.setStatus(rs.getString("status"));
-        r.setSources(rs.getString("sources"));
-        r.setFirstSeenAt(rs.getString("first_seen_at"));
-        r.setLastUsedAt(rs.getString("last_used_at"));
-        int rows = rs.getInt("last_use_rows");
-        r.setLastUseRows(rs.wasNull() ? null : rows);
-        return r;
+    private static String now() {
+        return TS.format(Instant.now());
+    }
+    @FunctionalInterface
+    private interface RowWork {
+        void apply(RelationUsage row) throws Exception;
     }
 }
