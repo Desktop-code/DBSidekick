@@ -174,12 +174,17 @@
           @click.stop
         >
           <template v-if="ctx.data?.nodeType === 'datasource'">
+            <li class="primary" :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxOneClickInit()">
+              🚀 一键初始化
+            </li>
+            <li class="sep" />
             <li @click="onDsNewSession()"><el-icon class="mi" :size="14"><ChatDotRound /></el-icon>新建会话</li>
             <li @click="onDsNewQuery()"><el-icon class="mi" :size="14"><EditPen /></el-icon>新建查询</li>
             <li class="sep" />
             <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxEdit()"><el-icon class="mi" :size="14"><Edit /></el-icon>编辑连接</li>
             <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxTest()"><el-icon class="mi" :size="14"><CircleCheck /></el-icon>测试连接</li>
             <li class="sep" />
+            <li class="group-label">高级操作</li>
             <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxSyncInstance()"><el-icon class="mi" :size="14"><Refresh /></el-icon>同步整个实例的 Schema</li>
             <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxIndexInstance()"><el-icon class="mi" :size="14"><Coin /></el-icon>索引整个实例到 Milvus</li>
             <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxAliases()"><el-icon class="mi" :size="14"><CollectionTag /></el-icon>生成所有表别名</li>
@@ -191,11 +196,16 @@
             <li class="danger" :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxDelete()"><el-icon class="mi" :size="14"><Delete /></el-icon>删除连接</li>
           </template>
           <template v-else-if="ctx.data?.nodeType === 'database'">
+            <li class="primary" :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxOneClickInit()">
+              🚀 一键初始化
+            </li>
+            <li class="sep" />
             <li @click="onCtxNewSession()"><el-icon class="mi" :size="14"><ChatDotRound /></el-icon>新建会话（绑定此库）</li>
             <li @click="onCtxNewQuery()"><el-icon class="mi" :size="14"><EditPen /></el-icon>新建查询（绑定此库）</li>
             <li class="sep" />
             <li @click="onCtxRefreshTables()"><el-icon class="mi" :size="14"><Refresh /></el-icon>刷新表列表</li>
             <li class="sep" />
+            <li class="group-label">高级操作</li>
             <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxSyncDatabase()"><el-icon class="mi" :size="14"><Refresh /></el-icon>同步此库的 Schema</li>
             <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxIndexDatabase()"><el-icon class="mi" :size="14"><Coin /></el-icon>索引此库到 Milvus</li>
             <li :class="{ disabled: ctxBusy }" @click="!ctxBusy && onCtxAliases()"><el-icon class="mi" :size="14"><CollectionTag /></el-icon>生成此库的表别名</li>
@@ -630,8 +640,48 @@ function openEdit(ds) {
   dialogVisible.value = true
 }
 
-async function onDialogSaved() {
+async function onDialogSaved(payload) {
   await reloadRoots()
+  if (payload?.__created && payload?.id) {
+    await offerSchemaInitAfterCreate(payload)
+  }
+}
+
+/**
+ * 新建连接保存后询问是否立即一键初始化。
+ */
+async function offerSchemaInitAfterCreate(payload) {
+  try {
+    await ElMessageBox.confirm(
+      '检测到新数据源，是否立即建立 AI 索引？\n将自动同步表结构、推断关系、生成别名并写入向量库。',
+      '建立 AI 索引',
+      {
+        type: 'info',
+        confirmButtonText: '是',
+        cancelButtonText: '否',
+        distinguishCancelAndClose: true
+      }
+    )
+  } catch {
+    return
+  }
+  appStore.openSchemaInit({
+    datasourceId: payload.id,
+    database: (payload.database || '').trim() || undefined
+  })
+}
+
+function onCtxOneClickInit() {
+  const data = ctx.data
+  closeCtx()
+  if (!data?.datasourceId) return
+  const db = data.nodeType === 'database'
+    ? (data.database || data.label || '')
+    : ''
+  appStore.openSchemaInit({
+    datasourceId: data.datasourceId,
+    database: db || undefined
+  })
 }
 
 async function loadNode(node, resolve) {
@@ -1674,6 +1724,21 @@ watch(
 }
 .ctx-menu li.disabled .mi {
   color: var(--sk-text-tertiary);
+}
+.ctx-menu li.primary {
+  font-weight: 600;
+  color: var(--el-color-primary);
+}
+.ctx-menu li.group-label {
+  font-size: 11px;
+  color: var(--el-text-color-secondary);
+  cursor: default;
+  padding-top: 6px;
+  padding-bottom: 2px;
+  pointer-events: none;
+}
+.ctx-menu li.group-label:hover {
+  background: transparent;
 }
 .ctx-menu li.sep {
   height: 1px;

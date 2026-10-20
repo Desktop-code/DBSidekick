@@ -43,10 +43,22 @@ public class SchemaSyncService {
     }
 
     public SyncResult sync(String datasourceId) throws Exception {
-        return sync(datasourceId, null);
+        return sync(datasourceId, null, SyncOptions.defaults());
     }
 
     public SyncResult sync(String datasourceId, String database) throws Exception {
+        return sync(datasourceId, database, SyncOptions.defaults());
+    }
+
+    /**
+     * 同步指定库的 Schema。
+     *
+     * @param options {@code skipAutoInfer=true} 时跳过内置自动推断（一键编排场景）；
+     *                {@code progress} 用于上报写表进度
+     */
+    public SyncResult sync(String datasourceId, String database, SyncOptions options) throws Exception {
+        SyncOptions opts = options == null ? SyncOptions.defaults() : options;
+        ProgressListener progress = opts.progressOrNoop();
         long start = System.currentTimeMillis();
         DbConfig config = dataSourceManager.getConfig(datasourceId);
         String db = StringUtils.hasText(database) ? database.trim()
@@ -63,6 +75,8 @@ public class SchemaSyncService {
         }
 
         List<SchemaTable> tables = extractorFactory.get(config.getType()).extract(config, db);
+        int total = tables.size();
+        progress.onProgress(SchemaInitStep.SYNC.name(), 0, total, "正在写入表结构 0/" + total);
 
         int tableCount = 0;
         int columnCount = 0;
@@ -119,6 +133,8 @@ public class SchemaSyncService {
                             colPs.executeUpdate();
                             columnCount++;
                         }
+                        progress.onProgress(SchemaInitStep.SYNC.name(), tableCount, total,
+                                "正在同步 " + tableCount + "/" + total + " 张表");
                     }
                 }
                 conn.commit();
@@ -130,13 +146,15 @@ public class SchemaSyncService {
             }
         }
 
-        // 同步完成后自动推断外键（失败不阻断同步结果）
-        try {
-            InferReport inferReport = relationInferService.infer(datasourceId, db);
-            log.info("[Sidekick] sync auto-infer inferred={} existing={} elapsedMs={}",
-                    inferReport.inferredCount(), inferReport.existingCount(), inferReport.elapsedMs());
-        } catch (Exception ex) {
-            log.warn("[Sidekick] sync auto-infer skipped: {}", ex.getMessage());
+        // 同步完成后自动推断外键（失败不阻断同步结果）；一键编排时由 Facade 显式推断
+        if (!opts.skipAutoInfer()) {
+            try {
+                InferReport inferReport = relationInferService.infer(datasourceId, db);
+                log.info("[Sidekick] sync auto-infer inferred={} existing={} elapsedMs={}",
+                        inferReport.inferredCount(), inferReport.existingCount(), inferReport.elapsedMs());
+            } catch (Exception ex) {
+                log.warn("[Sidekick] sync auto-infer skipped: {}", ex.getMessage());
+            }
         }
 
         return new SyncResult(tableCount, columnCount, System.currentTimeMillis() - start);

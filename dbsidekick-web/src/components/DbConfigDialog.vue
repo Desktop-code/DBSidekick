@@ -186,13 +186,26 @@ async function onSave() {
     if (props.mode === 'edit') {
       await updateDatasource(payload)
       ElMessage.success('已更新连接')
+      emit('saved', { ...payload, __created: false })
     } else {
+      // 新建：若尚未测试成功，先自动测连再保存
+      if (!testOk.value) {
+        const res = await testDatasource(payload)
+        if (!res?.success) {
+          testOk.value = false
+          testMsg.value = res?.message || '连接失败，请先通过测试再保存'
+          ElMessage.error(testMsg.value)
+          return
+        }
+        testOk.value = true
+        testMsg.value = `连接成功（${res.latencyMs ?? 0} ms）`
+      }
       delete payload.id
       const res = await addDatasource(payload)
       payload.id = res?.id
       ElMessage.success('已新建连接')
+      emit('saved', { ...payload, __created: true })
     }
-    emit('saved', payload)
     visible.value = false
   } catch (e) {
     ElMessage.error(e?.response?.data?.message || e?.message || '保存失败')

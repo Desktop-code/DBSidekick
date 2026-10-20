@@ -52,10 +52,21 @@ public class TableAliasGenerator {
     }
 
     public GenReport generateAll(String datasourceId, boolean overwrite) {
-        return generateAll(datasourceId, overwrite, null);
+        return generateAll(datasourceId, overwrite, null, ProgressListener.NOOP);
     }
 
     public GenReport generateAll(String datasourceId, boolean overwrite, String database) {
+        return generateAll(datasourceId, overwrite, database, ProgressListener.NOOP);
+    }
+
+    /**
+     * 批量生成表别名。
+     *
+     * @param progress 可选进度回调；传 null 等同 {@link ProgressListener#NOOP}
+     */
+    public GenReport generateAll(String datasourceId, boolean overwrite, String database,
+                                 ProgressListener progress) {
+        ProgressListener listener = ProgressListener.orNoop(progress);
         if (!StringUtils.hasText(datasourceId)) {
             throw new IllegalArgumentException("datasourceId 不能为空");
         }
@@ -71,12 +82,15 @@ public class TableAliasGenerator {
         int failed = 0;
         int total = tables.size();
         log.info("[Sidekick][alias] start datasource={} tables={} overwrite={}", ds, total, overwrite);
+        listener.onProgress(SchemaInitStep.ALIAS.name(), 0, total, "正在生成表别名 0/" + total);
 
         int processed = 0;
         for (TableRow row : tables) {
             processed++;
             if (!overwrite && StringUtils.hasText(row.aliases)) {
                 skipped++;
+                listener.onProgress(SchemaInitStep.ALIAS.name(), processed, total,
+                        "正在生成表别名 " + processed + "/" + total);
                 continue;
             }
             try {
@@ -95,6 +109,8 @@ public class TableAliasGenerator {
                 failed++;
                 log.warn("[Sidekick][alias] failed table={}: {}", row.tableName, ex.getMessage());
             }
+            listener.onProgress(SchemaInitStep.ALIAS.name(), processed, total,
+                    "正在生成表别名 " + processed + "/" + total);
             if (processed % 10 == 0 || processed == total) {
                 log.info("[Sidekick][alias] progress {}/{} generated={} skipped={} failed={}",
                         processed, total, generated, skipped, failed);

@@ -62,7 +62,7 @@ public class SchemaVectorService {
     }
 
     public IndexResult indexDatasource(String datasourceId) {
-        return indexDatasource(datasourceId, null);
+        return indexDatasource(datasourceId, null, ProgressListener.NOOP);
     }
 
     /** 只删除该连接下某一个库的向量，不重写索引。 */
@@ -77,6 +77,16 @@ public class SchemaVectorService {
     }
 
     public IndexResult indexDatasource(String datasourceId, String database) {
+        return indexDatasource(datasourceId, database, ProgressListener.NOOP);
+    }
+
+    /**
+     * 将指定库的 Schema 向量化写入 Milvus。
+     *
+     * @param progress 可选进度回调；传 null 等同 {@link ProgressListener#NOOP}
+     */
+    public IndexResult indexDatasource(String datasourceId, String database, ProgressListener progress) {
+        ProgressListener listener = ProgressListener.orNoop(progress);
         if (!StringUtils.hasText(datasourceId)) {
             throw new IllegalArgumentException("datasourceId 不能为空");
         }
@@ -95,6 +105,7 @@ public class SchemaVectorService {
         int indexed = 0;
         int skipped = 0;
         log.info("[Sidekick] indexing datasource={} db={} tables={}", datasourceId, db, total);
+        listener.onProgress(SchemaInitStep.INDEX.name(), 0, total, "正在建立向量索引 0/" + total);
 
         milvusSchemaStore.deleteByDatasource(datasourceId.trim(), db);
 
@@ -120,9 +131,11 @@ public class SchemaVectorService {
                 log.warn("[Sidekick] embed 失败 table={} id={}: {}", row.tableName, row.id, ex.getMessage());
             }
 
-            int progress = i + 1;
-            if (progress % 10 == 0 || progress == total) {
-                log.info("[Sidekick] indexed {}/{}", progress, total);
+            int done = i + 1;
+            listener.onProgress(SchemaInitStep.INDEX.name(), done, total,
+                    "正在建立向量索引 " + done + "/" + total);
+            if (done % 10 == 0 || done == total) {
+                log.info("[Sidekick] indexed {}/{}", done, total);
             }
 
             if (batch.size() >= UPSERT_BATCH) {

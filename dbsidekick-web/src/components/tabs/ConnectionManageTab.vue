@@ -87,9 +87,29 @@ function openEdit(row) {
   dialogVisible.value = true
 }
 
-async function onSaved() {
+async function onSaved(payload) {
   await appStore.loadDatasources()
   await appStore.refreshDatasourceStatuses()
+  if (payload?.__created && payload?.id) {
+    try {
+      await ElMessageBox.confirm(
+        '检测到新数据源，是否立即建立 AI 索引？\n将自动同步表结构、推断关系、生成别名并写入向量库。',
+        '建立 AI 索引',
+        {
+          type: 'info',
+          confirmButtonText: '是',
+          cancelButtonText: '否',
+          distinguishCancelAndClose: true
+        }
+      )
+    } catch {
+      return
+    }
+    appStore.openSchemaInit({
+      datasourceId: payload.id,
+      database: (payload.database || '').trim() || undefined
+    })
+  }
 }
 
 async function onTest(row) {

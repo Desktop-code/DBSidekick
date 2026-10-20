@@ -118,6 +118,13 @@ export const useAppStore = defineStore('app', {
     settingsDialog: {
       open: false,
       section: 'llm'
+    },
+    /** 一键初始化 Modal 请求 */
+    schemaInit: {
+      open: false,
+      datasourceId: '',
+      database: '',
+      token: 0
     }
   }),
   getters: {
@@ -174,6 +181,22 @@ export const useAppStore = defineStore('app', {
     },
     closeSessionDialog() {
       this.sessionDialog = { ...this.sessionDialog, open: false }
+    },
+    /**
+     * 打开一键初始化进度弹窗。
+     * @param {{ datasourceId: string, database?: string }} opts
+     */
+    openSchemaInit({ datasourceId, database } = {}) {
+      if (!datasourceId) return
+      this.schemaInit = {
+        open: true,
+        datasourceId,
+        database: database || '',
+        token: Date.now()
+      }
+    },
+    closeSchemaInit() {
+      this.schemaInit = { ...this.schemaInit, open: false }
     },
     bumpSessionRefresh() {
       this.sessionRefreshTrigger += 1
